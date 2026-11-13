@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -105,7 +106,10 @@ fun AdminScreen(
     onUpdateOnlineChannel: (String) -> Unit,
     onToggleDsnsAutoSync: (Boolean) -> Unit,
     onUpdatePin: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    userEmail: String = "",
+    isVerifiedAdmin: Boolean = false,
+    onSignOut: () -> Unit = {}
 ) {
     if (userRole == UserRole.USER) {
         // Restricted View for non-admin users
@@ -153,6 +157,16 @@ fun AdminScreen(
                         letterSpacing = 0.6.sp
                     )
 
+                    if (userEmail.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Ваш акаунт: $userEmail",
+                            color = UkrYellow,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
                     Spacer(modifier = Modifier.height(8.dp))
 
                     Text(
@@ -163,27 +177,53 @@ fun AdminScreen(
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
 
-                    Spacer(modifier = Modifier.height(24.dp))
+                    Spacer(modifier = Modifier.height(22.dp))
 
-                    Button(
-                        onClick = onOpenPinDialog,
-                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                    if (isVerifiedAdmin) {
+                        Button(
+                            onClick = onOpenPinDialog,
+                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("unlock_admin_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Key,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Розблокувати панель Дениса",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                    }
+
+                    OutlinedButton(
+                        onClick = onSignOut,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp)
-                            .testTag("unlock_admin_btn")
+                            .testTag("admin_switch_account_btn")
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Key,
+                            imageVector = Icons.AutoMirrored.Filled.Logout,
                             contentDescription = null,
+                            tint = UkrYellow,
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Увійти як адміністратор Денис",
+                            text = "Змінити Google-акаунт",
+                            color = UkrYellow,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
+                            fontSize = 13.sp
                         )
                     }
                 }
@@ -1032,32 +1072,49 @@ private fun AdminControlPanel(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    Surface(
+                        color = Color(0xFF10192B),
+                        shape = RoundedCornerShape(10.dp),
+                        border = androidx.compose.foundation.BorderStroke(
+                            width = 1.dp,
+                            color = AlertGreenClear.copy(alpha = 0.4f)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Офіційний онлайн-канал тривог України",
-                                color = Color.White,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 12.sp
-                            )
-                            Text(
-                                text = "Автоматично оновлює області в реальному часі",
-                                color = TextSecondary,
-                                fontSize = 11.sp
-                            )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Ручний режим тривог (лише Денис)",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                                Text(
+                                    text = "Автоматичні тривоги вимкнено — тривоги оголошуєте та знімаєте лише ви.",
+                                    color = TextSecondary,
+                                    fontSize = 11.sp
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Surface(
+                                color = AlertGreenClear.copy(alpha = 0.16f),
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = "АВТО ВИМКНЕНО",
+                                    color = AlertGreenClear,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 10.sp,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
                         }
-                        Switch(
-                            checked = dsnsAutoSyncEnabled,
-                            onCheckedChange = onToggleDsnsAutoSync,
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color.Black,
-                                checkedTrackColor = AlertGreenClear
-                            )
-                        )
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))

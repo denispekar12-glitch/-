@@ -1,8 +1,10 @@
 package com.example.viewmodel
 
-import android.app.Application
-import androidx.lifecycle.AndroidViewModel
+import android.util.Log
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.ai.AiAdvisorUiState
+import com.example.ai.AiSafetyAdvisor
 import com.example.audio.AlertSoundPlayer
 import com.example.data.AlertRepository
 import com.example.model.AdminBroadcast
@@ -13,16 +15,25 @@ import com.example.model.RegionItem
 import com.example.model.SoundSettings
 import com.example.model.UserRole
 import com.example.notifications.AlertNotificationHelper
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
-class MainViewModel(application: Application) : AndroidViewModel(application) {
+private const val AI_TAG = "MainViewModelAi"
 
-    private val repository = AlertRepository(application)
-    private val soundPlayer = AlertSoundPlayer(application)
-    private val notificationHelper = AlertNotificationHelper(application)
+class MainViewModel(
+    private val repository: AlertRepository,
+    private val soundPlayer: AlertSoundPlayer,
+    private val notificationHelper: AlertNotificationHelper,
+    val userEmail: String = "",
+    val isVerifiedAdmin: Boolean = false,
+    private val aiAdvisor: AiSafetyAdvisor = AiSafetyAdvisor()
+) : ViewModel() {
 
     val regions: StateFlow<List<RegionItem>> = repository.regions
     val events: StateFlow<List<AlertEventLog>> = repository.events
@@ -49,6 +60,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _showPinDialog = MutableStateFlow(false)
     val showPinDialog: StateFlow<Boolean> = _showPinDialog.asStateFlow()
+
+    private val _aiUiState = MutableStateFlow<AiAdvisorUiState>(AiAdvisorUiState.Idle)
+    val aiUiState: StateFlow<AiAdvisorUiState> = _aiUiState.asStateFlow()
+
+    private var activeAiJob: Job? = null
 
     init {
         // Keep selected region restored and always synchronized with live updates
@@ -210,8 +226,58 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         repository.updateAdminPin(newPin)
     }
 
+    fun analyzeSituationWithAi() {
+        runAiStream { aiAdvisor.streamSituationBrief(regions.value) }
+    }
+
+    fun askAiSafetyQuestion(question: String) {
+        val trimmed = question.trim()
+        if (trimmed.isEmpty()) return
+        runAiStream { aiAdvisor.streamSafetyAnswer(trimmed, regions.value) }
+    }
+
+    fun resetAiState() {
+        activeAiJob?.cancel()
+        _aiUiState.value = AiAdvisorUiState.Idle
+    }
+
+    private fun runAiStream(flowProvider: () -> kotlinx.coroutines.flow.Flow<String>) {
+        activeAiJob?.cancel()
+        activeAiJob = viewModelScope.launch {
+            _aiUiState.value = AiAdvisorUiState.Loading
+            val accumulated = StringBuilder()
+            try {
+                withTimeout(60_000L) {
+                    flowProvider().collect { chunkText ->
+                        accumulated.append(chunkText)
+                        _aiUiState.value = AiAdvisorUiState.Streaming(accumulated.toString())
+                    }
+                }
+                if (accumulated.isNotBlank()) {
+                    _aiUiState.value = AiAdvisorUiState.Success(accumulated.toString().trim())
+                } else {
+                    _aiUiState.value = AiAdvisorUiState.Error("Модель Gemini повернула порожню відповідь.")
+                }
+            } catch (e: TimeoutCancellationException) {
+                Log.e(AI_TAG, "Gemini AI streaming timed out after 60s", e)
+                _aiUiState.value = AiAdvisorUiState.Error(
+                    "Час очікування відповіді Gemini вичерпано (60 с). Спробуйте ще раз."
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(AI_TAG, "Firebase AI generation failed", e)
+                _aiUiState.value = AiAdvisorUiState.Error(
+                    e.localizedMessage ?: "Не вдалося отримати відповідь від Gemini API."
+                )
+            }
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
+        activeAiJob?.cancel()
         soundPlayer.stopAll()
+        repository.dispose()
     }
 }

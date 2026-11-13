@@ -1,6 +1,7 @@
 package com.example
 
 import android.Manifest
+import android.app.Application
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -10,8 +11,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,16 +19,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.NotificationsActive
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.outlined.AdminPanelSettings
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.NotificationsActive
-import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -41,6 +40,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -48,41 +50,110 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.credentials.CredentialManager
+import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import com.example.audio.AlertSoundPlayer
+import com.example.auth.authStateFlow
+import com.example.auth.configureAppCheck
+import com.example.auth.isVerifiedAdminUser
+import com.example.auth.signOutGoogle
+import com.example.data.AlertRepository
+import com.example.data.FirestoreSyncRepository
 import com.example.model.UserRole
+import com.example.notifications.AlertNotificationHelper
 import com.example.ui.components.AdminPinDialog
 import com.example.ui.components.AlertHeaderBar
 import com.example.ui.screens.AdminScreen
 import com.example.ui.screens.AlertsDashboardScreen
 import com.example.ui.screens.AudioSettingsScreen
+import com.example.ui.screens.AuthScreen
 import com.example.ui.screens.DiscussionScreen
 import com.example.ui.screens.MapScreen
 import com.example.ui.theme.AlertRed
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.PrimaryBlue
-import com.example.ui.theme.SurfaceCardDark
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.UkrYellow
 import com.example.viewmodel.MainViewModel
+import com.google.firebase.Firebase
+import com.google.firebase.auth.auth
+import com.google.firebase.firestore.FirebaseFirestore
 
 class MainActivity : ComponentActivity() {
 
-    private val viewModel: MainViewModel by viewModels()
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        configureAppCheck(this, intent)
         enableEdgeToEdge()
 
         setContent {
             MyApplicationTheme {
-                MainAppContent(viewModel = viewModel)
+                val authUser by Firebase.auth.authStateFlow()
+                    .collectAsStateWithLifecycle(initialValue = Firebase.auth.currentUser)
+
+                val currentUser = authUser
+                if (currentUser == null) {
+                    AuthScreen(
+                        onAuthSuccess = {}
+                    )
+                } else {
+                    key(currentUser.uid) {
+                        val isVerifiedAdmin = isVerifiedAdminUser(currentUser)
+                        val userEmail = currentUser.email.orEmpty()
+                        val userDisplayName = currentUser.displayName.orEmpty()
+                        val viewModel: MainViewModel = viewModel(
+                            key = currentUser.uid,
+                            factory = viewModelFactory {
+                                initializer {
+                                    val app = checkNotNull(this[APPLICATION_KEY]) as Application
+                                    val db = FirebaseFirestore.getInstance(
+                                        app.getString(R.string.firestore_database_id)
+                                    )
+                                    val firestoreSync = FirestoreSyncRepository(db, Firebase.auth)
+                                    val repo = AlertRepository(
+                                        context = app,
+                                        enableBackgroundSync = true,
+                                        firestoreSync = firestoreSync,
+                                        authUserId = currentUser.uid,
+                                        isVerifiedGoogleAdmin = isVerifiedAdmin,
+                                        authUserEmail = userEmail,
+                                        authDisplayName = userDisplayName
+                                    )
+                                    MainViewModel(
+                                        repository = repo,
+                                        soundPlayer = AlertSoundPlayer(app),
+                                        notificationHelper = AlertNotificationHelper(app),
+                                        userEmail = userEmail,
+                                        isVerifiedAdmin = isVerifiedAdmin
+                                    )
+                                }
+                            }
+                        )
+                        MainAppContent(
+                            viewModel = viewModel,
+                            userEmail = userEmail,
+                            isVerifiedAdmin = isVerifiedAdmin
+                        )
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-fun MainAppContent(viewModel: MainViewModel) {
+fun MainAppContent(
+    viewModel: MainViewModel,
+    userEmail: String = "",
+    isVerifiedAdmin: Boolean = false
+) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val credentialManager = remember(context) { CredentialManager.create(context) }
     val regions by viewModel.regions.collectAsState()
     val events by viewModel.events.collectAsState()
     val comments by viewModel.comments.collectAsState()
@@ -100,6 +171,7 @@ fun MainAppContent(viewModel: MainViewModel) {
     val selectedRegion by viewModel.selectedRegion.collectAsState()
     val selectedTab by viewModel.selectedTab.collectAsState()
     val showPinDialog by viewModel.showPinDialog.collectAsState()
+    val aiState by viewModel.aiUiState.collectAsStateWithLifecycle()
 
     // Request notification permissions gracefully on Android 13+
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -216,7 +288,7 @@ fun MainAppContent(viewModel: MainViewModel) {
                     onClick = { viewModel.setTab(3) },
                     icon = {
                         Icon(
-                            imageVector = if (selectedTab == 3) Icons.Filled.VolumeUp else Icons.Outlined.VolumeUp,
+                            imageVector = if (selectedTab == 3) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Outlined.VolumeUp,
                             contentDescription = "Звук"
                         )
                     },
@@ -286,7 +358,11 @@ fun MainAppContent(viewModel: MainViewModel) {
                         viewModel.triggerStreetFightsAllClear()
                     },
                     onOpenAudioSettings = { viewModel.setTab(3) },
-                    onOpenMap = { viewModel.setTab(1) }
+                    onOpenMap = { viewModel.setTab(1) },
+                    aiState = aiState,
+                    onAnalyzeWithAi = { viewModel.analyzeSituationWithAi() },
+                    onAskAiQuestion = { q -> viewModel.askAiSafetyQuestion(q) },
+                    onResetAiState = { viewModel.resetAiState() }
                 )
 
                 1 -> MapScreen(
@@ -342,7 +418,12 @@ fun MainAppContent(viewModel: MainViewModel) {
                     onSyncNow = { viewModel.syncNow() },
                     onUpdateOnlineChannel = { viewModel.updateOnlineChannelId(it) },
                     onToggleDsnsAutoSync = { viewModel.setDsnsAutoSyncEnabled(it) },
-                    onUpdatePin = { viewModel.updateAdminPin(it) }
+                    onUpdatePin = { viewModel.updateAdminPin(it) },
+                    userEmail = userEmail,
+                    isVerifiedAdmin = isVerifiedAdmin,
+                    onSignOut = {
+                        signOutGoogle(credentialManager, coroutineScope)
+                    }
                 )
             }
 
@@ -351,7 +432,12 @@ fun MainAppContent(viewModel: MainViewModel) {
                     currentRole = userRole,
                     onDismiss = { viewModel.closePinDialog() },
                     onVerifyPin = { pin -> viewModel.verifyAdminPin(pin) },
-                    onLockToUser = { viewModel.lockToUserRole() }
+                    onLockToUser = { viewModel.lockToUserRole() },
+                    userEmail = userEmail,
+                    isVerifiedAdmin = isVerifiedAdmin,
+                    onSignOut = {
+                        signOutGoogle(credentialManager, coroutineScope)
+                    }
                 )
             }
         }

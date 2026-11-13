@@ -15,7 +15,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.VerifiedUser
@@ -25,6 +25,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -59,7 +60,10 @@ fun AdminPinDialog(
     currentRole: UserRole,
     onDismiss: () -> Unit,
     onVerifyPin: (String) -> Boolean,
-    onLockToUser: () -> Unit
+    onLockToUser: () -> Unit,
+    userEmail: String = "",
+    isVerifiedAdmin: Boolean = false,
+    onSignOut: () -> Unit = {}
 ) {
     var pinText by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -102,7 +106,7 @@ fun AdminPinDialog(
                         }
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
-                            text = if (currentRole == UserRole.ADMIN) "Керування доступом" else "Вхід адміністратора Дениса",
+                            text = if (currentRole == UserRole.ADMIN) "Керування доступом" else "Акаунт і права доступу",
                             color = TextPrimary,
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp
@@ -118,6 +122,22 @@ fun AdminPinDialog(
                     }
                 }
 
+                if (userEmail.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFF0E1320),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Google-акаунт: $userEmail",
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(14.dp))
 
                 if (currentRole == UserRole.ADMIN) {
@@ -127,7 +147,7 @@ fun AdminPinDialog(
                         fontSize = 13.sp
                     )
 
-                    Spacer(modifier = Modifier.height(20.dp))
+                    Spacer(modifier = Modifier.height(18.dp))
 
                     Button(
                         onClick = {
@@ -149,10 +169,32 @@ fun AdminPinDialog(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Увімкнути режим користувача (Обмежений)",
+                            text = "Увімкнути режим користувача",
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold
                         )
+                    }
+                } else if (!isVerifiedAdmin) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFF1E283E),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                text = "🔒 Режим користувача (Обмежений доступ)",
+                                color = UkrYellow,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Повне керування тривогами захищено правилами Firebase і доступне лише власнику системи Денису (denispekar12@gmail.com). Ви отримуєте всі тривоги, озвучення та чат у реальному часі.",
+                                color = TextSecondary,
+                                fontSize = 11.sp,
+                                lineHeight = 16.sp
+                            )
+                        }
                     }
                 } else {
                     Surface(
@@ -212,7 +254,7 @@ fun AdminPinDialog(
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(18.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
 
                     Button(
                         onClick = {
@@ -236,6 +278,34 @@ fun AdminPinDialog(
                             fontWeight = FontWeight.Bold
                         )
                     }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                OutlinedButton(
+                    onClick = {
+                        onDismiss()
+                        onSignOut()
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("sign_out_google_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Logout,
+                        contentDescription = null,
+                        tint = AlertRed,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Вийти з акаунта Google",
+                        color = AlertRed,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
         }

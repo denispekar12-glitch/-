@@ -1,0 +1,302 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Shared hardened helper primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Sole Administrator: Denis (denispekar12@gmail.com) with verified email,
+    // or explicit /admins/{uid} marker document.
+    function isAdmin() {
+      return isSignedIn() && (
+        (request.auth.token.email is string &&
+         request.auth.token.email.lower() == 'denispekar12@gmail.com' &&
+         request.auth.token.email_verified == true) ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidAlertLevel(lvl) {
+      return lvl in ['SAFE', 'YELLOW', 'CIVIL_DEFENSE', 'RED', 'STREET_FIGHTS'];
+    }
+
+    function isValidTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    // Entity validation helpers
+    function isValidUserProfile(data) {
+      return data.userId is string &&
+             data.userId.size() >= 1 &&
+             data.userId.size() <= 128 &&
+             data.displayName is string &&
+             data.displayName.size() <= 80 &&
+             data.email is string &&
+             data.email.size() <= 160 &&
+             data.monitoredRegionIds is list &&
+             data.monitoredRegionIds.size() <= 35 &&
+             (data.monitoredRegionIds.size() == 0 || data.monitoredRegionIds[0] is string) &&
+             data.soundVolume is number &&
+             data.soundVolume >= 0.0 &&
+             data.soundVolume <= 1.0 &&
+             data.vibrationEnabled is bool &&
+             data.autoPlayVoice is bool &&
+             data.onlineChannelId is string &&
+             data.onlineChannelId.size() >= 1 &&
+             data.onlineChannelId.size() <= 64 &&
+             data.dsnsAutoSyncEnabled is bool &&
+             data.selectedTab is int &&
+             data.selectedTab >= 0 &&
+             data.selectedTab <= 4 &&
+             data.selectedRegionId is string &&
+             data.selectedRegionId.size() >= 1 &&
+             data.selectedRegionId.size() <= 64 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidAlertRegion(data) {
+      return data.regionName is string &&
+             data.regionName.size() >= 1 &&
+             data.regionName.size() <= 120 &&
+             data.currentLevel is string &&
+             isValidAlertLevel(data.currentLevel) &&
+             data.activeLevels is list &&
+             data.activeLevels.size() <= 5 &&
+             (data.activeLevels.size() == 0 || data.activeLevels[0] is string) &&
+             data.threatDetails is string &&
+             data.threatDetails.size() <= 500 &&
+             data.adminName is string &&
+             data.adminName.size() >= 1 &&
+             data.adminName.size() <= 80 &&
+             data.updatedByUid is string &&
+             data.updatedByUid.size() >= 1 &&
+             data.updatedByUid.size() <= 128 &&
+             data.isPublic == true &&
+             (!('alertStartTime' in data) || (data.alertStartTime is int && data.alertStartTime >= 0)) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidAlertEvent(data) {
+      return data.regionId is string &&
+             data.regionId.size() >= 1 &&
+             data.regionId.size() <= 64 &&
+             data.regionName is string &&
+             data.regionName.size() >= 1 &&
+             data.regionName.size() <= 120 &&
+             data.level is string &&
+             isValidAlertLevel(data.level) &&
+             data.activeLevels is list &&
+             data.activeLevels.size() >= 1 &&
+             data.activeLevels.size() <= 5 &&
+             data.activeLevels[0] is string &&
+             data.threatDetails is string &&
+             data.threatDetails.size() <= 500 &&
+             data.source is string &&
+             data.source.size() >= 1 &&
+             data.source.size() <= 120 &&
+             data.adminName is string &&
+             data.adminName.size() >= 1 &&
+             data.adminName.size() <= 80 &&
+             data.authorUid is string &&
+             data.authorUid.size() >= 1 &&
+             data.authorUid.size() <= 128 &&
+             data.isBroadcastBanner is bool &&
+             data.isTotalAllClear is bool &&
+             data.isPublic == true &&
+             data.clientTimestampMs is int &&
+             data.clientTimestampMs >= 0 &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidCommunityMessage(data) {
+      return data.authorUid is string &&
+             data.authorUid.size() >= 1 &&
+             data.authorUid.size() <= 128 &&
+             data.authorName is string &&
+             data.authorName.size() >= 1 &&
+             data.authorName.size() <= 80 &&
+             data.authorRole in ['ADMIN', 'USER'] &&
+             data.text is string &&
+             data.text.size() >= 1 &&
+             data.text.size() <= 1000 &&
+             data.regionTag is string &&
+             data.regionTag.size() >= 1 &&
+             data.regionTag.size() <= 100 &&
+             data.isAdminVerified is bool &&
+             data.isPublic == true &&
+             data.clientTimestampMs is int &&
+             data.clientTimestampMs >= 0 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    // 1. Private User Profile & Settings (strictly owner-isolated PII & prefs)
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if isSignedIn() && request.auth.uid == userId;
+
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll([
+                         'userId', 'displayName', 'email', 'monitoredRegionIds',
+                         'soundVolume', 'vibrationEnabled', 'autoPlayVoice',
+                         'onlineChannelId', 'dsnsAutoSyncEnabled', 'selectedTab',
+                         'selectedRegionId', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'displayName', 'email', 'monitoredRegionIds',
+                         'soundVolume', 'vibrationEnabled', 'autoPlayVoice',
+                         'onlineChannelId', 'dsnsAutoSyncEnabled', 'selectedTab',
+                         'selectedRegionId', 'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidUserProfile(incoming());
+
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'displayName', 'email', 'monitoredRegionIds',
+                         'soundVolume', 'vibrationEnabled', 'autoPlayVoice',
+                         'onlineChannelId', 'dsnsAutoSyncEnabled', 'selectedTab',
+                         'selectedRegionId', 'updatedAt'
+                       ]);
+
+      allow delete: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+    }
+
+    // 2. Shared Live Region Alert States (Read by signed-in users, Write ONLY by Admin Denis)
+    match /alert_regions/{regionId} {
+      allow get: if isSignedIn() && isValidId(regionId) && (resource == null || existing().isPublic == true || isAdmin());
+      allow list: if isSignedIn() && existing().isPublic == true;
+
+      allow create: if isSignedIn() &&
+                       isValidId(regionId) &&
+                       isValidAlertRegion(incoming()) &&
+                       isAdmin() &&
+                       incoming().updatedByUid == request.auth.uid &&
+                       incoming().keys().hasAll([
+                         'regionName', 'currentLevel', 'activeLevels',
+                         'threatDetails', 'adminName', 'updatedByUid',
+                         'isPublic', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'regionName', 'currentLevel', 'activeLevels',
+                         'threatDetails', 'adminName', 'updatedByUid',
+                         'isPublic', 'alertStartTime', 'createdAt', 'updatedAt'
+                       ]);
+
+      allow update: if isSignedIn() &&
+                       isValidId(regionId) &&
+                       isValidAlertRegion(incoming()) &&
+                       isAdmin() &&
+                       incoming().updatedByUid == request.auth.uid &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().isPublic == existing().isPublic &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'regionName', 'currentLevel', 'activeLevels',
+                         'threatDetails', 'adminName', 'updatedByUid',
+                         'alertStartTime', 'updatedAt'
+                       ]);
+
+      allow delete: if isSignedIn() && isValidId(regionId) && isAdmin();
+    }
+
+    // 3. Immutable Shared Alert Broadcast Event Feed (Read by signed-in users, Create/Delete ONLY by Admin Denis)
+    match /alert_events/{eventId} {
+      allow get: if isSignedIn() && isValidId(eventId) && (resource == null || existing().isPublic == true || isAdmin());
+      allow list: if isSignedIn() && existing().isPublic == true;
+
+      allow create: if isSignedIn() &&
+                       isValidId(eventId) &&
+                       isValidAlertEvent(incoming()) &&
+                       isAdmin() &&
+                       incoming().authorUid == request.auth.uid &&
+                       incoming().keys().hasAll([
+                         'regionId', 'regionName', 'level', 'activeLevels',
+                         'threatDetails', 'source', 'adminName', 'authorUid',
+                         'isBroadcastBanner', 'isTotalAllClear', 'isPublic',
+                         'clientTimestampMs', 'createdAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'regionId', 'regionName', 'level', 'activeLevels',
+                         'threatDetails', 'source', 'adminName', 'authorUid',
+                         'isBroadcastBanner', 'isTotalAllClear', 'isPublic',
+                         'clientTimestampMs', 'createdAt'
+                       ]);
+
+      allow update: if false;
+      allow delete: if isSignedIn() && isValidId(eventId) && isAdmin();
+    }
+
+    // 4. Community Live Discussion Messages (Anti-admin-spoof enforced)
+    match /community_messages/{messageId} {
+      allow get: if isSignedIn() && isValidId(messageId) && (resource == null || existing().isPublic == true || isAdmin());
+      allow list: if isSignedIn() && existing().isPublic == true;
+
+      allow create: if isSignedIn() &&
+                       isValidId(messageId) &&
+                       isValidCommunityMessage(incoming()) &&
+                       incoming().authorUid == request.auth.uid &&
+                       ((incoming().isAdminVerified == false && incoming().authorRole == 'USER') || isAdmin()) &&
+                       incoming().keys().hasAll([
+                         'authorUid', 'authorName', 'authorRole', 'text',
+                         'regionTag', 'isAdminVerified', 'isPublic',
+                         'clientTimestampMs', 'createdAt', 'updatedAt'
+                       ]) &&
+                       incoming().keys().hasOnly([
+                         'authorUid', 'authorName', 'authorRole', 'text',
+                         'regionTag', 'isAdminVerified', 'isPublic',
+                         'clientTimestampMs', 'createdAt', 'updatedAt'
+                       ]);
+
+      allow update: if isSignedIn() &&
+                       isValidId(messageId) &&
+                       isValidCommunityMessage(incoming()) &&
+                       (existing().authorUid == request.auth.uid || isAdmin()) &&
+                       incoming().authorUid == existing().authorUid &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().authorRole == existing().authorRole &&
+                       incoming().isAdminVerified == existing().isAdminVerified &&
+                       incoming().isPublic == existing().isPublic &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'text', 'regionTag', 'updatedAt'
+                       ]);
+
+      allow delete: if isSignedIn() &&
+                       isValidId(messageId) &&
+                       (existing().authorUid == request.auth.uid || isAdmin());
+    }
+
+    // 5. Server-managed Admin Registry (read own marker only, no client writes)
+    match /admins/{adminUid} {
+      allow get: if isSignedIn() && isValidId(adminUid) && request.auth.uid == adminUid;
+      allow list, create, update, delete: if false;
+    }
+  }
+}

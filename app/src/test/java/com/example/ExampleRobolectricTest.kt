@@ -220,4 +220,15 @@ class ExampleRobolectricTest {
       assertTrue(reg.effectiveActiveAlerts.containsAll(multiLevels))
     }
   }
+
+  @Test
+  fun `verify all regions start SAFE with no automatic alerts`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    context.getSharedPreferences("omastro_trivoga_prefs", Context.MODE_PRIVATE).edit().clear().commit()
+    val repo = AlertRepository(context, enableBackgroundSync = false)
+
+    assertEquals(false, repo.dsnsAutoSyncEnabled.value)
+    assertTrue(repo.regions.value.isNotEmpty())
+    assertTrue(repo.regions.value.all { it.currentLevel == AlertLevel.SAFE && it.activeAlerts.isEmpty() })
+  }
 }

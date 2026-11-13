@@ -7,6 +7,10 @@ import com.example.model.AlertChangeEvent
 import com.example.model.AlertEventLog
 import com.example.model.AlertLevel
 import com.example.model.DiscussionComment
+import com.example.model.FirestoreAlertEvent
+import com.example.model.FirestoreAlertRegion
+import com.example.model.FirestoreCommunityMessage
+import com.example.model.FirestoreUserProfile
 import com.example.model.RegionItem
 import com.example.model.SoundSettings
 import com.example.model.UserRole
@@ -14,6 +18,8 @@ import com.example.network.OfficialOblastStatus
 import com.example.network.OnlineAlertSyncClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,6 +27,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.json.JSONArray
@@ -30,14 +37,19 @@ import java.util.concurrent.ConcurrentHashMap
 
 class AlertRepository(
     context: Context,
-    private val enableBackgroundSync: Boolean = true
+    private val enableBackgroundSync: Boolean = true,
+    private val firestoreSync: FirestoreSyncRepository? = null,
+    private val authUserId: String? = null,
+    private val isVerifiedGoogleAdmin: Boolean = false,
+    private val authUserEmail: String = "",
+    private val authDisplayName: String = ""
 ) {
 
     private val appContext = context.applicationContext
     private val prefs: SharedPreferences =
         appContext.getSharedPreferences("omastro_trivoga_prefs", Context.MODE_PRIVATE)
     private val syncClient = OnlineAlertSyncClient(appContext)
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     companion object {
         const val KRYVE_OZERO_ID = "kryve_ozero"
@@ -56,6 +68,7 @@ class AlertRepository(
         const val PREF_SELECTED_REGION_ID = "selected_region_id"
         const val PREF_ONLINE_CHANNEL = "online_sync_channel_id"
         const val PREF_DSNS_AUTO_SYNC = "dsns_auto_sync_enabled"
+        const val PREF_MANUAL_ONLY_MIGRATED = "manual_only_alerts_migrated_v1"
         const val PREF_LAST_SYNC_TS = "last_sync_timestamp"
         const val PREF_DEVICE_ID = "device_unique_id"
         const val PREF_PROCESSED_IDS = "processed_remote_ids"
@@ -79,7 +92,12 @@ class AlertRepository(
 
     // Tracks recent admin manual overrides so DSNS background sync doesn't immediately revert them
     private val manualOverrideTimestamps = ConcurrentHashMap<String, Long>()
+    private val lastLocalAdminWriteMs = ConcurrentHashMap<String, Long>()
     private val processedRemoteIds = mutableSetOf<String>()
+    @Volatile
+    private var hasLoadedInitialFirestoreEvents = false
+    @Volatile
+    private var profileSeededInFirestore = false
 
     private val _regions = MutableStateFlow<List<RegionItem>>(emptyList())
     val regions: StateFlow<List<RegionItem>> = _regions.asStateFlow()
@@ -114,7 +132,7 @@ class AlertRepository(
     private val _onlineChannelId = MutableStateFlow(DEFAULT_ONLINE_CHANNEL)
     val onlineChannelId: StateFlow<String> = _onlineChannelId.asStateFlow()
 
-    private val _dsnsAutoSyncEnabled = MutableStateFlow(true)
+    private val _dsnsAutoSyncEnabled = MutableStateFlow(false)
     val dsnsAutoSyncEnabled: StateFlow<Boolean> = _dsnsAutoSyncEnabled.asStateFlow()
 
     private val _authorName = MutableStateFlow("")
@@ -140,17 +158,37 @@ class AlertRepository(
         loadPersistedEvents()
         loadPersistedBroadcast()
         loadComments()
+        if (firestoreSync != null && authUserId != null) {
+            startFirestoreObservers(firestoreSync, authUserId)
+        }
         if (enableBackgroundSync) {
             startPeriodicSync()
         }
     }
 
+    fun dispose() {
+        scope.cancel()
+    }
+
     private fun loadSettings() {
-        val roleStr = prefs.getString(PREF_ROLE, UserRole.ADMIN.name) ?: UserRole.ADMIN.name
-        _userRole.value = try {
-            UserRole.valueOf(roleStr)
-        } catch (_: Exception) {
-            UserRole.ADMIN
+        _userRole.value = if (firestoreSync != null && authUserId != null) {
+            if (isVerifiedGoogleAdmin) {
+                val roleStr = prefs.getString(PREF_ROLE, UserRole.ADMIN.name) ?: UserRole.ADMIN.name
+                try {
+                    UserRole.valueOf(roleStr)
+                } catch (_: Exception) {
+                    UserRole.ADMIN
+                }
+            } else {
+                UserRole.USER
+            }
+        } else {
+            val roleStr = prefs.getString(PREF_ROLE, UserRole.ADMIN.name) ?: UserRole.ADMIN.name
+            try {
+                UserRole.valueOf(roleStr)
+            } catch (_: Exception) {
+                UserRole.ADMIN
+            }
         }
 
         val vol = prefs.getFloat(PREF_VOLUME, 1.0f)
@@ -166,7 +204,7 @@ class AlertRepository(
 
         _onlineChannelId.value = prefs.getString(PREF_ONLINE_CHANNEL, DEFAULT_ONLINE_CHANNEL)
             ?.takeIf { it.isNotBlank() } ?: DEFAULT_ONLINE_CHANNEL
-        _dsnsAutoSyncEnabled.value = prefs.getBoolean(PREF_DSNS_AUTO_SYNC, true)
+        _dsnsAutoSyncEnabled.value = prefs.getBoolean(PREF_DSNS_AUTO_SYNC, false)
         _authorName.value = prefs.getString(PREF_AUTHOR_NAME, "") ?: ""
         _savedSelectedTab.value = prefs.getInt(PREF_SELECTED_TAB, 0).coerceIn(0, 4)
         _savedSelectedRegionId.value = prefs.getString(PREF_SELECTED_REGION_ID, KRYVE_OZERO_ID) ?: KRYVE_OZERO_ID
@@ -191,7 +229,7 @@ class AlertRepository(
                 isHromada = true,
                 isMonitored = monitoredIds.contains(KRYVE_OZERO_ID),
                 currentLevel = AlertLevel.SAFE,
-                threatDetails = "Рідна громада під постійним моніторингом",
+                threatDetails = "Рідна громада • Тривоги вмикає лише адміністратор Денис",
                 mapNormX = 0.47f,
                 mapNormY = 0.65f
             ),
@@ -241,9 +279,7 @@ class AlertRepository(
                 oblast = "Харківська область",
                 isHromada = false,
                 isMonitored = monitoredIds.contains("kharkiv"),
-                currentLevel = AlertLevel.RED,
-                alertStartTime = System.currentTimeMillis() - 15 * 60 * 1000,
-                threatDetails = "Загроза ударних БПЛА та КАБ",
+                currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.75f,
                 mapNormY = 0.38f
             ),
@@ -253,9 +289,7 @@ class AlertRepository(
                 oblast = "Дніпропетровська область",
                 isHromada = false,
                 isMonitored = monitoredIds.contains("dnipro"),
-                currentLevel = AlertLevel.YELLOW,
-                alertStartTime = System.currentTimeMillis() - 8 * 60 * 1000,
-                threatDetails = "Активність тактичної авіації",
+                currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.64f,
                 mapNormY = 0.55f
             ),
@@ -265,9 +299,7 @@ class AlertRepository(
                 oblast = "Запорізька область",
                 isHromada = false,
                 isMonitored = monitoredIds.contains("zaporizhzhia"),
-                currentLevel = AlertLevel.RED,
-                alertStartTime = System.currentTimeMillis() - 22 * 60 * 1000,
-                threatDetails = "Артилерійський обстріл та балістика",
+                currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.68f,
                 mapNormY = 0.68f
             ),
@@ -277,9 +309,7 @@ class AlertRepository(
                 oblast = "Херсонська область",
                 isHromada = false,
                 isMonitored = monitoredIds.contains("kherson"),
-                currentLevel = AlertLevel.RED,
-                alertStartTime = System.currentTimeMillis() - 35 * 60 * 1000,
-                threatDetails = "Загроза обстрілів прибережних зон",
+                currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.58f,
                 mapNormY = 0.78f
             ),
@@ -319,9 +349,7 @@ class AlertRepository(
                 oblast = "Сумська область",
                 isHromada = false,
                 isMonitored = monitoredIds.contains("sumy"),
-                currentLevel = AlertLevel.RED,
-                alertStartTime = System.currentTimeMillis() - 40 * 60 * 1000,
-                threatDetails = "КАБ по прикордонних громадах",
+                currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.66f,
                 mapNormY = 0.26f
             ),
@@ -441,9 +469,7 @@ class AlertRepository(
                 oblast = "Донецька область",
                 isHromada = false,
                 isMonitored = monitoredIds.contains("donetsk"),
-                currentLevel = AlertLevel.RED,
-                alertStartTime = System.currentTimeMillis() - 120 * 60 * 1000,
-                threatDetails = "Постійна загроза бойових дій та ракет",
+                currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.82f,
                 mapNormY = 0.58f
             ),
@@ -453,9 +479,7 @@ class AlertRepository(
                 oblast = "Луганська область",
                 isHromada = false,
                 isMonitored = monitoredIds.contains("luhansk"),
-                currentLevel = AlertLevel.RED,
-                alertStartTime = System.currentTimeMillis() - 300 * 60 * 1000,
-                threatDetails = "Тривала повітряна тривога",
+                currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.90f,
                 mapNormY = 0.44f
             ),
@@ -465,34 +489,44 @@ class AlertRepository(
                 oblast = "АР Крим",
                 isHromada = false,
                 isMonitored = monitoredIds.contains("crimea"),
-                currentLevel = AlertLevel.RED,
-                alertStartTime = System.currentTimeMillis() - 300 * 60 * 1000,
-                threatDetails = "Тривога діє постійно",
+                currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.62f,
                 mapNormY = 0.92f
             )
         )
 
         val savedStates = loadPersistedRegionsState()
+        val isManualMigrated = prefs.getBoolean(PREF_MANUAL_ONLY_MIGRATED, false)
         _regions.value = initial.map { base ->
             val saved = savedStates[base.id]
             if (saved != null) {
-                if (saved.manualOverrideAt > 0L) {
-                    manualOverrideTimestamps[base.id] = saved.manualOverrideAt
+                // Clear any old pre-populated/DSNS auto-alerts on first launch of manual-only mode
+                if (!isManualMigrated && saved.manualOverrideAt == 0L) {
+                    base.copy(isMonitored = saved.isMonitored)
+                } else {
+                    if (saved.manualOverrideAt > 0L) {
+                        manualOverrideTimestamps[base.id] = saved.manualOverrideAt
+                    }
+                    val restoredSet = saved.activeAlerts.filter { it.isDanger }.toSet().ifEmpty {
+                        if (saved.level.isDanger) setOf(saved.level) else emptySet()
+                    }
+                    val primary = AlertLevel.primaryOf(restoredSet)
+                    base.copy(
+                        isMonitored = saved.isMonitored,
+                        currentLevel = primary,
+                        activeAlerts = restoredSet,
+                        alertStartTime = saved.alertStartTime,
+                        threatDetails = saved.threatDetails.ifBlank { base.threatDetails }
+                    )
                 }
-                val restoredSet = saved.activeAlerts.filter { it.isDanger }.toSet().ifEmpty {
-                    if (saved.level.isDanger) setOf(saved.level) else emptySet()
-                }
-                val primary = AlertLevel.primaryOf(restoredSet)
-                base.copy(
-                    isMonitored = saved.isMonitored,
-                    currentLevel = primary,
-                    activeAlerts = restoredSet,
-                    alertStartTime = saved.alertStartTime,
-                    threatDetails = saved.threatDetails.ifBlank { base.threatDetails }
-                )
             } else {
                 base
+            }
+        }
+        if (!isManualMigrated) {
+            prefs.edit().putBoolean(PREF_MANUAL_ONLY_MIGRATED, true).apply()
+            if (savedStates.isNotEmpty()) {
+                saveRegionsState()
             }
         }
     }
@@ -631,7 +665,7 @@ class AlertRepository(
                 level = AlertLevel.SAFE,
                 activeLevels = listOf(AlertLevel.SAFE),
                 timestamp = System.currentTimeMillis() - 10 * 60 * 1000,
-                threatDetails = "Офіційне сповіщення: ситуація спокійна",
+                threatDetails = "Спокійно • Тривоги вмикає лише адміністратор Денис",
                 source = "Адміністратор Денис"
             )
         )
@@ -719,6 +753,7 @@ class AlertRepository(
             }
         }
         saveRegionsState()
+        syncUserProfileToFirestore()
     }
 
     fun toggleRegionMonitored(regionId: String) {
@@ -728,6 +763,7 @@ class AlertRepository(
             }
         }
         saveRegionsState()
+        syncUserProfileToFirestore()
     }
 
     // Admin mutation: single alert level (replaces active set or clears to SAFE)
@@ -743,8 +779,12 @@ class AlertRepository(
         threatNote: String = "",
         audioOverride: List<AlertLevel>? = null
     ) {
+        if (firestoreSync != null && authUserId != null && (!isVerifiedGoogleAdmin || _userRole.value != UserRole.ADMIN)) {
+            return
+        }
         val now = System.currentTimeMillis()
         manualOverrideTimestamps[regionId] = now
+        lastLocalAdminWriteMs[regionId] = now
         val dangerSet = levels.filter { it.isDanger }.toSet()
         val updatedItem = applyRegionMultiAlertMutation(
             regionId = regionId,
@@ -760,6 +800,35 @@ class AlertRepository(
         updatedItem?.let { reg ->
             val eventId = UUID.randomUUID().toString()
             markRemoteIdProcessed(eventId)
+            markRemoteIdProcessed("fs_$eventId")
+            markRemoteIdProcessed("banner_$eventId")
+            if (firestoreSync != null && authUserId != null && isVerifiedGoogleAdmin) {
+                val activeLevelNames = reg.effectiveActiveAlerts.map { it.name }
+                scope.launch {
+                    firestoreSync.publishRegionAlert(
+                        regionId = reg.id,
+                        regionName = reg.name,
+                        currentLevel = reg.currentLevel.name,
+                        activeLevels = activeLevelNames,
+                        threatDetails = reg.threatDetails,
+                        adminName = ADMIN_OWNER_NAME,
+                        alertStartTime = reg.alertStartTime
+                    )
+                    firestoreSync.publishAlertEvent(
+                        eventId = eventId,
+                        regionId = reg.id,
+                        regionName = reg.name,
+                        level = reg.currentLevel.name,
+                        activeLevels = activeLevelNames.ifEmpty { listOf(reg.currentLevel.name) },
+                        threatDetails = reg.threatDetails,
+                        source = "Адміністратор $ADMIN_OWNER_NAME",
+                        adminName = ADMIN_OWNER_NAME,
+                        isBroadcastBanner = true,
+                        isTotalAllClear = false,
+                        clientTimestampMs = now
+                    )
+                }
+            }
             val activeNames = JSONArray().apply {
                 reg.effectiveActiveAlerts.forEach { put(it.name) }
             }
@@ -818,11 +887,15 @@ class AlertRepository(
         levels: Set<AlertLevel>,
         threatNote: String = ""
     ) {
+        if (firestoreSync != null && authUserId != null && (!isVerifiedGoogleAdmin || _userRole.value != UserRole.ADMIN)) {
+            return
+        }
         val uniqueIds = regionIds.distinct().filter { id -> _regions.value.any { it.id == id } }
         if (uniqueIds.isEmpty()) return
         uniqueIds.forEachIndexed { index, id ->
             val now = System.currentTimeMillis()
             manualOverrideTimestamps[id] = now
+            lastLocalAdminWriteMs[id] = now
             val dangerSet = levels.filter { it.isDanger }.toSet()
             val updatedItem = applyRegionMultiAlertMutation(
                 regionId = id,
@@ -837,6 +910,35 @@ class AlertRepository(
             updatedItem?.let { reg ->
                 val eventId = UUID.randomUUID().toString()
                 markRemoteIdProcessed(eventId)
+                markRemoteIdProcessed("fs_$eventId")
+                markRemoteIdProcessed("banner_$eventId")
+                if (firestoreSync != null && authUserId != null && isVerifiedGoogleAdmin) {
+                    val activeLevelNames = reg.effectiveActiveAlerts.map { it.name }
+                    scope.launch {
+                        firestoreSync.publishRegionAlert(
+                            regionId = reg.id,
+                            regionName = reg.name,
+                            currentLevel = reg.currentLevel.name,
+                            activeLevels = activeLevelNames,
+                            threatDetails = reg.threatDetails,
+                            adminName = ADMIN_OWNER_NAME,
+                            alertStartTime = reg.alertStartTime
+                        )
+                        firestoreSync.publishAlertEvent(
+                            eventId = eventId,
+                            regionId = reg.id,
+                            regionName = reg.name,
+                            level = reg.currentLevel.name,
+                            activeLevels = activeLevelNames.ifEmpty { listOf(reg.currentLevel.name) },
+                            threatDetails = reg.threatDetails,
+                            source = "Адміністратор $ADMIN_OWNER_NAME",
+                            adminName = ADMIN_OWNER_NAME,
+                            isBroadcastBanner = (index == uniqueIds.lastIndex),
+                            isTotalAllClear = false,
+                            clientTimestampMs = now
+                        )
+                    }
+                }
                 val activeNames = JSONArray().apply {
                     reg.effectiveActiveAlerts.forEach { put(it.name) }
                 }
@@ -979,13 +1081,52 @@ class AlertRepository(
 
     // Master Total All-Clear: sets all regions and hromadas across Ukraine to SAFE, saves & broadcasts online
     fun triggerTotalAllClear() {
+        if (firestoreSync != null && authUserId != null && (!isVerifiedGoogleAdmin || _userRole.value != UserRole.ADMIN)) {
+            return
+        }
         val now = System.currentTimeMillis()
         val totalNote = "Тотальний відбій для всієї території України! Небезпека минула."
-        _regions.value.forEach { manualOverrideTimestamps[it.id] = now }
+        val previouslyDangerous = _regions.value.filter { it.currentLevel.isDanger || it.id == KRYVE_OZERO_ID }
+        _regions.value.forEach {
+            manualOverrideTimestamps[it.id] = now
+            lastLocalAdminWriteMs[it.id] = now
+        }
         applyTotalAllClearLocally(totalNote, "Адміністратор $ADMIN_OWNER_NAME", now, emitAudio = true)
 
         val eventId = UUID.randomUUID().toString()
         markRemoteIdProcessed(eventId)
+        markRemoteIdProcessed("fs_$eventId")
+        markRemoteIdProcessed("banner_$eventId")
+
+        if (firestoreSync != null && authUserId != null && isVerifiedGoogleAdmin) {
+            scope.launch {
+                previouslyDangerous.forEach { reg ->
+                    firestoreSync.publishRegionAlert(
+                        regionId = reg.id,
+                        regionName = reg.name,
+                        currentLevel = AlertLevel.SAFE.name,
+                        activeLevels = emptyList(),
+                        threatDetails = totalNote,
+                        adminName = ADMIN_OWNER_NAME,
+                        alertStartTime = null
+                    )
+                }
+                firestoreSync.publishAlertEvent(
+                    eventId = eventId,
+                    regionId = "all_ukraine",
+                    regionName = "Вся територія України (ВЕСЬ ВІДБІЙ)",
+                    level = AlertLevel.SAFE.name,
+                    activeLevels = listOf(AlertLevel.SAFE.name),
+                    threatDetails = totalNote,
+                    source = "Адміністратор $ADMIN_OWNER_NAME",
+                    adminName = ADMIN_OWNER_NAME,
+                    isBroadcastBanner = true,
+                    isTotalAllClear = true,
+                    clientTimestampMs = now
+                )
+            }
+        }
+
         val envelope = JSONObject().apply {
             put("type", "TOTAL_CLEAR")
             put("eventId", eventId)
@@ -1188,23 +1329,24 @@ class AlertRepository(
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
 
-        val isAdmin = role == UserRole.ADMIN
+        val isAdmin = role == UserRole.ADMIN && (firestoreSync == null || isVerifiedGoogleAdmin)
+        val effectiveRole = if (isAdmin) UserRole.ADMIN else UserRole.USER
         val finalAuthor = if (isAdmin) {
             if (authorName.isNotBlank() && !authorName.contains("Денис")) "$authorName (Денис)" else "Денис (Адміністратор)"
         } else {
-            authorName.ifBlank { "Житель громади" }
+            authorName.ifBlank { authDisplayName.ifBlank { "Житель громади" } }
         }
 
         val commentId = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
-        if (role != UserRole.ADMIN && authorName.isNotBlank()) {
+        if (effectiveRole != UserRole.ADMIN && authorName.isNotBlank()) {
             saveAuthorName(authorName.trim())
         }
 
         val comment = DiscussionComment(
             id = commentId,
             authorName = finalAuthor,
-            authorRole = role,
+            authorRole = effectiveRole,
             text = trimmed,
             timestamp = now,
             regionTag = regionTag,
@@ -1217,6 +1359,20 @@ class AlertRepository(
             updated
         }
 
+        if (firestoreSync != null && authUserId != null) {
+            scope.launch {
+                firestoreSync.postCommunityMessage(
+                    messageId = commentId,
+                    authorName = finalAuthor,
+                    authorRole = effectiveRole.name,
+                    text = trimmed,
+                    regionTag = regionTag,
+                    isAdminVerified = isAdmin,
+                    clientTimestampMs = now
+                )
+            }
+        }
+
         // Publish comment to live online channel so other users see it
         markRemoteIdProcessed(commentId)
         val envelope = JSONObject().apply {
@@ -1224,7 +1380,7 @@ class AlertRepository(
             put("eventId", commentId)
             put("senderDeviceId", deviceId)
             put("authorName", finalAuthor)
-            put("authorRole", role.name)
+            put("authorRole", effectiveRole.name)
             put("text", trimmed)
             put("regionTag", regionTag)
             put("isAdminVerified", isAdmin)
@@ -1240,39 +1396,52 @@ class AlertRepository(
     fun saveAuthorName(name: String) {
         _authorName.value = name
         prefs.edit().putString(PREF_AUTHOR_NAME, name).apply()
+        syncUserProfileToFirestore()
     }
 
     fun saveSelectedTab(index: Int) {
         val safeIndex = index.coerceIn(0, 4)
         _savedSelectedTab.value = safeIndex
         prefs.edit().putInt(PREF_SELECTED_TAB, safeIndex).apply()
+        syncUserProfileToFirestore()
     }
 
     fun saveSelectedRegionId(regionId: String) {
         _savedSelectedRegionId.value = regionId
         prefs.edit().putString(PREF_SELECTED_REGION_ID, regionId).apply()
+        syncUserProfileToFirestore()
     }
 
     fun updateOnlineChannelId(newChannel: String) {
         val sanitized = syncClient.sanitizeChannelId(newChannel).ifBlank { DEFAULT_ONLINE_CHANNEL }
         _onlineChannelId.value = sanitized
         prefs.edit().putString(PREF_ONLINE_CHANNEL, sanitized).apply()
+        syncUserProfileToFirestore()
         syncNow()
     }
 
     fun setDsnsAutoSyncEnabled(enabled: Boolean) {
         _dsnsAutoSyncEnabled.value = enabled
         prefs.edit().putBoolean(PREF_DSNS_AUTO_SYNC, enabled).apply()
+        syncUserProfileToFirestore()
         if (enabled) syncNow()
     }
 
     // Role management
     fun setUserRole(role: UserRole) {
+        if (firestoreSync != null && authUserId != null && role == UserRole.ADMIN && !isVerifiedGoogleAdmin) {
+            _userRole.value = UserRole.USER
+            prefs.edit().putString(PREF_ROLE, UserRole.USER.name).apply()
+            return
+        }
         _userRole.value = role
         prefs.edit().putString(PREF_ROLE, role.name).apply()
     }
 
     fun verifyAdminPin(pin: String): Boolean {
+        if (firestoreSync != null && authUserId != null && !isVerifiedGoogleAdmin) {
+            return false
+        }
         val storedPin = prefs.getString(PREF_PIN, DEFAULT_PIN) ?: DEFAULT_PIN
         return pin == storedPin
     }
@@ -1288,6 +1457,7 @@ class AlertRepository(
             .putBoolean(PREF_VIBRATION, newSettings.vibrationEnabled)
             .putBoolean(PREF_AUTO_VOICE, newSettings.autoPlayVoice)
             .apply()
+        syncUserProfileToFirestore()
     }
 
     fun syncNow() {
@@ -1357,23 +1527,16 @@ class AlertRepository(
                 return
             }
 
-            var anySuccess = false
+            // Automatic external DSNS alerts are disabled: only Administrator Denis activates/clears alerts.
+            // In Firebase mode, Firestore real-time listeners (strictly enforced by security rules) deliver verified admin alerts.
+            var anySuccess = firestoreSync != null && authUserId != null
 
-            // 1. Poll live online channel (Admin broadcasts + Community comments)
-            val channelRes = syncClient.pollChannelMessages(_onlineChannelId.value, since = "12h")
-            if (channelRes.isSuccess) {
-                anySuccess = true
-                val messages = channelRes.getOrNull().orEmpty()
-                processRemoteChannelMessages(messages)
-            }
-
-            // 2. Fetch live Ukraine official air raid alerts from ubilling.net.ua/aerialalerts/
-            if (_dsnsAutoSyncEnabled.value) {
-                val alertsRes = syncClient.fetchUkraineOfficialAlerts()
-                if (alertsRes.isSuccess) {
+            if (firestoreSync == null) {
+                val channelRes = syncClient.pollChannelMessages(_onlineChannelId.value, since = "12h")
+                if (channelRes.isSuccess) {
                     anySuccess = true
-                    val states = alertsRes.getOrNull().orEmpty()
-                    applyOfficialOnlineAlerts(states)
+                    val messages = channelRes.getOrNull().orEmpty()
+                    processRemoteChannelMessages(messages)
                 }
             }
 
@@ -1382,10 +1545,10 @@ class AlertRepository(
                 _isApiConnected.value = true
                 _lastSyncTimestamp.value = now
                 prefs.edit().putLong(PREF_LAST_SYNC_TS, now).apply()
-                _onlineStatusMessage.value = if (_dsnsAutoSyncEnabled.value) {
-                    "Онлайн • ДСНС + Прямий ефір"
+                _onlineStatusMessage.value = if (firestoreSync != null) {
+                    "Онлайн • Лише керування Дениса (Firebase)"
                 } else {
-                    "Онлайн • Прямий ефір"
+                    "Онлайн • Лише керування Дениса"
                 }
             } else {
                 _isApiConnected.value = false
@@ -1580,5 +1743,308 @@ class AlertRepository(
             states["Автономна Республіка Крим"]?.let { return it }
         }
         return null
+    }
+
+    private fun syncUserProfileToFirestore() {
+        val fs = firestoreSync ?: return
+        if (authUserId == null) return
+        val monitoredIds = _regions.value.filter { it.isMonitored }.map { it.id }
+        val sound = _soundSettings.value
+        val display = _authorName.value.ifBlank { authDisplayName }.ifBlank {
+            authUserEmail.substringBefore("@").ifBlank { "Користувач" }
+        }
+        scope.launch {
+            fs.upsertUserProfile(
+                displayName = display,
+                email = authUserEmail,
+                monitoredRegionIds = monitoredIds,
+                soundVolume = sound.volume,
+                vibrationEnabled = sound.vibrationEnabled,
+                autoPlayVoice = sound.autoPlayVoice,
+                onlineChannelId = _onlineChannelId.value,
+                dsnsAutoSyncEnabled = _dsnsAutoSyncEnabled.value,
+                selectedTab = _savedSelectedTab.value,
+                selectedRegionId = _savedSelectedRegionId.value
+            )
+        }
+    }
+
+    private fun startFirestoreObservers(fs: FirestoreSyncRepository, uid: String) {
+        scope.launch {
+            fs.observeUserProfile(uid)
+                .catch { /* Logged inside FirestoreSyncRepository */ }
+                .collect { profile ->
+                    if (profile == null) {
+                        if (!profileSeededInFirestore) {
+                            profileSeededInFirestore = true
+                            syncUserProfileToFirestore()
+                        }
+                    } else {
+                        profileSeededInFirestore = true
+                        applyRemoteUserProfile(profile)
+                    }
+                }
+        }
+
+        scope.launch {
+            fs.observeAlertRegions()
+                .catch { /* Logged inside FirestoreSyncRepository */ }
+                .collect { remoteRegions ->
+                    applyRemoteAlertRegions(remoteRegions)
+                }
+        }
+
+        scope.launch {
+            fs.observeAlertEvents()
+                .catch { /* Logged inside FirestoreSyncRepository */ }
+                .collect { remoteEvents ->
+                    applyRemoteAlertEvents(remoteEvents)
+                }
+        }
+
+        scope.launch {
+            fs.observeCommunityMessages()
+                .catch { /* Logged inside FirestoreSyncRepository */ }
+                .collect { remoteMessages ->
+                    applyRemoteCommunityMessages(remoteMessages)
+                }
+        }
+    }
+
+    private fun applyRemoteUserProfile(profile: FirestoreUserProfile) {
+        if (profile.monitoredRegionIds.isNotEmpty()) {
+            val remoteMonitored = profile.monitoredRegionIds.toSet()
+            _regions.update { current ->
+                current.map { it.copy(isMonitored = remoteMonitored.contains(it.id)) }
+            }
+            saveRegionsState()
+        }
+
+        val updatedSound = SoundSettings(
+            volume = profile.soundVolume.toFloat().coerceIn(0f, 1f),
+            vibrationEnabled = profile.vibrationEnabled,
+            playOnceOnly = true,
+            autoPlayVoice = profile.autoPlayVoice
+        )
+        _soundSettings.value = updatedSound
+        prefs.edit()
+            .putFloat(PREF_VOLUME, updatedSound.volume)
+            .putBoolean(PREF_VIBRATION, updatedSound.vibrationEnabled)
+            .putBoolean(PREF_AUTO_VOICE, updatedSound.autoPlayVoice)
+            .apply()
+
+        if (profile.displayName.isNotBlank() && _authorName.value.isBlank()) {
+            _authorName.value = profile.displayName
+            prefs.edit().putString(PREF_AUTHOR_NAME, profile.displayName).apply()
+        }
+        if (profile.onlineChannelId.isNotBlank()) {
+            _onlineChannelId.value = profile.onlineChannelId
+            prefs.edit().putString(PREF_ONLINE_CHANNEL, profile.onlineChannelId).apply()
+        }
+        _dsnsAutoSyncEnabled.value = profile.dsnsAutoSyncEnabled
+        prefs.edit().putBoolean(PREF_DSNS_AUTO_SYNC, profile.dsnsAutoSyncEnabled).apply()
+        val safeTab = profile.selectedTab.toInt().coerceIn(0, 4)
+        _savedSelectedTab.value = safeTab
+        prefs.edit().putInt(PREF_SELECTED_TAB, safeTab).apply()
+        if (profile.selectedRegionId.isNotBlank()) {
+            _savedSelectedRegionId.value = profile.selectedRegionId
+            prefs.edit().putString(PREF_SELECTED_REGION_ID, profile.selectedRegionId).apply()
+        }
+    }
+
+    private fun applyRemoteAlertRegions(remoteList: List<FirestoreAlertRegion>) {
+        if (remoteList.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val byId = remoteList.associateBy { it.id }
+        var changed = false
+
+        _regions.update { current ->
+            current.map { region ->
+                val remote = byId[region.id] ?: return@map region
+                val recentLocalWrite = now - (lastLocalAdminWriteMs[region.id] ?: 0L)
+                if (recentLocalWrite < 2500L) return@map region
+
+                val activeSet = remote.activeLevels.mapNotNull { name ->
+                    try { AlertLevel.valueOf(name) } catch (_: Exception) { null }
+                }.filter { it.isDanger }.toSet().ifEmpty {
+                    val single = try { AlertLevel.valueOf(remote.currentLevel) } catch (_: Exception) { AlertLevel.SAFE }
+                    if (single.isDanger) setOf(single) else emptySet()
+                }
+                val primary = AlertLevel.primaryOf(activeSet)
+                val remoteTs = remote.updatedAt?.toDate()?.time ?: remote.alertStartTime ?: now
+                manualOverrideTimestamps[region.id] = maxOf(manualOverrideTimestamps[region.id] ?: 0L, remoteTs)
+
+                val nextStart = if (primary.isDanger) (remote.alertStartTime ?: region.alertStartTime ?: remoteTs) else null
+                val nextDetails = remote.threatDetails.ifBlank { region.threatDetails }
+
+                if (region.currentLevel != primary || region.activeAlerts != activeSet || region.threatDetails != nextDetails) {
+                    changed = true
+                    region.copy(
+                        currentLevel = primary,
+                        activeAlerts = activeSet,
+                        alertStartTime = nextStart,
+                        threatDetails = nextDetails
+                    )
+                } else {
+                    region
+                }
+            }
+        }
+
+        if (changed) {
+            saveRegionsState()
+        }
+        _isApiConnected.value = true
+        _lastSyncTimestamp.value = now
+        prefs.edit().putLong(PREF_LAST_SYNC_TS, now).apply()
+        _onlineStatusMessage.value = "Онлайн • Лише керування Дениса (Firebase)"
+    }
+
+    private fun applyRemoteAlertEvents(remoteEvents: List<FirestoreAlertEvent>) {
+        if (remoteEvents.isEmpty()) {
+            hasLoadedInitialFirestoreEvents = true
+            return
+        }
+        val now = System.currentTimeMillis()
+        val mapped = remoteEvents.map { ev ->
+            val primary = try { AlertLevel.valueOf(ev.level) } catch (_: Exception) { AlertLevel.SAFE }
+            val active = ev.activeLevels.mapNotNull { name ->
+                try { AlertLevel.valueOf(name) } catch (_: Exception) { null }
+            }.ifEmpty { listOf(primary) }
+            val ts = ev.clientTimestampMs.takeIf { it > 0L }
+                ?: ev.createdAt?.toDate()?.time
+                ?: now
+            AlertEventLog(
+                id = ev.id,
+                regionName = ev.regionName,
+                level = primary,
+                activeLevels = active,
+                timestamp = ts,
+                threatDetails = ev.threatDetails,
+                source = ev.source.ifBlank { "Адміністратор ${ev.adminName}" }
+            )
+        }
+
+        _events.update { current ->
+            val merged = (mapped + current)
+                .distinctBy { it.id }
+                .sortedByDescending { it.timestamp }
+                .take(50)
+            saveEvents(merged)
+            merged
+        }
+
+        val newestBannerSource = remoteEvents.firstOrNull { it.isBroadcastBanner }
+        if (newestBannerSource != null) {
+            val bannerTs = newestBannerSource.clientTimestampMs.takeIf { it > 0L }
+                ?: newestBannerSource.createdAt?.toDate()?.time
+                ?: now
+            val currentBannerTs = _latestAdminBroadcast.value?.timestamp ?: 0L
+            if (bannerTs > currentBannerTs && markRemoteIdProcessed("banner_${newestBannerSource.id}")) {
+                val primary = try { AlertLevel.valueOf(newestBannerSource.level) } catch (_: Exception) { AlertLevel.SAFE }
+                val active = newestBannerSource.activeLevels.mapNotNull { name ->
+                    try { AlertLevel.valueOf(name) } catch (_: Exception) { null }
+                }.ifEmpty { listOf(primary) }
+                val broadcast = AdminBroadcast(
+                    id = newestBannerSource.id,
+                    regionName = newestBannerSource.regionName,
+                    level = primary,
+                    activeLevels = active,
+                    timestamp = bannerTs,
+                    note = newestBannerSource.threatDetails,
+                    adminName = newestBannerSource.adminName.ifBlank { ADMIN_OWNER_NAME }
+                )
+                _latestAdminBroadcast.value = broadcast
+                saveLatestBroadcast(broadcast)
+            }
+        }
+
+        if (!hasLoadedInitialFirestoreEvents) {
+            hasLoadedInitialFirestoreEvents = true
+            remoteEvents.forEach { markRemoteIdProcessed("fs_${it.id}") }
+            return
+        }
+
+        val newestUnseen = remoteEvents.firstOrNull { ev ->
+            val ts = ev.clientTimestampMs.takeIf { it > 0L }
+                ?: ev.createdAt?.toDate()?.time
+                ?: now
+            val isRecent = (now - ts) < 5 * 60 * 1000L
+            markRemoteIdProcessed("fs_${ev.id}") && isRecent
+        }
+        remoteEvents.forEach { markRemoteIdProcessed("fs_${it.id}") }
+
+        if (newestUnseen != null) {
+            val primary = try { AlertLevel.valueOf(newestUnseen.level) } catch (_: Exception) { AlertLevel.SAFE }
+            val active = newestUnseen.activeLevels.mapNotNull { name ->
+                try { AlertLevel.valueOf(name) } catch (_: Exception) { null }
+            }.ifEmpty { listOf(primary) }
+
+            val targetRegion = _regions.value.find { it.id == newestUnseen.regionId }
+                ?: RegionItem(
+                    id = newestUnseen.regionId.ifBlank { KRYVE_OZERO_ID },
+                    name = newestUnseen.regionName.ifBlank { "Вся Україна" },
+                    oblast = "Україна",
+                    isHromada = newestUnseen.regionId == KRYVE_OZERO_ID,
+                    isMonitored = true,
+                    currentLevel = primary,
+                    activeAlerts = active.filter { it.isDanger }.toSet(),
+                    threatDetails = newestUnseen.threatDetails
+                )
+
+            if (newestUnseen.isTotalAllClear) {
+                applyTotalAllClearLocally(
+                    totalNote = newestUnseen.threatDetails.ifBlank { "Тотальний відбій для всієї території України!" },
+                    source = newestUnseen.source.ifBlank { "Адміністратор Денис (Firebase)" },
+                    timestamp = newestUnseen.clientTimestampMs.takeIf { it > 0L } ?: now,
+                    emitAudio = true
+                )
+            } else {
+                scope.launch {
+                    _alertStateChanges.emit(
+                        AlertChangeEvent(
+                            region = targetRegion,
+                            levelsToPlay = active,
+                            allActiveLevels = active
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private fun applyRemoteCommunityMessages(remoteMessages: List<FirestoreCommunityMessage>) {
+        if (remoteMessages.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val mapped = remoteMessages.mapNotNull { msg ->
+            val text = msg.text.trim()
+            if (text.isEmpty()) return@mapNotNull null
+            val role = try {
+                UserRole.valueOf(msg.authorRole)
+            } catch (_: Exception) {
+                UserRole.USER
+            }
+            val ts = msg.clientTimestampMs.takeIf { it > 0L }
+                ?: msg.createdAt?.toDate()?.time
+                ?: now
+            DiscussionComment(
+                id = msg.id,
+                authorName = msg.authorName.ifBlank { "Житель громади" },
+                authorRole = role,
+                text = text,
+                timestamp = ts,
+                regionTag = msg.regionTag.ifBlank { "Кривоозерська громада" },
+                isAdminVerified = msg.isAdminVerified
+            )
+        }
+        if (mapped.isEmpty()) return
+        _comments.update { current ->
+            val merged = (mapped + current)
+                .distinctBy { it.id }
+                .sortedByDescending { it.timestamp }
+                .take(60)
+            saveComments(merged)
+            merged
+        }
     }
 }

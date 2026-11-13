@@ -368,70 +368,72 @@ fun AudioSettingsScreen(
             }
         }
 
-        // Test section
-        item {
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF151B2B)),
-                border = CardDefaults.outlinedCardBorder().copy(
-                    brush = androidx.compose.ui.graphics.SolidColor(SurfaceBorderDark)
-                ),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Text(
-                        text = "ШВИДКИЙ ТЕСТ СПОВІЩЕННЯ ДЛЯ КРИВОГО ОЗЕРА (1 РАЗ)",
-                        color = UkrYellow,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        letterSpacing = 0.5.sp
-                    )
-                    Text(
-                        text = "Натисніть для перевірки відтворення сигналу в реальному часі",
-                        color = TextMuted,
-                        fontSize = 11.sp
-                    )
+        // Test section — only Admin Denis can trigger live region alerts
+        if (userRole == UserRole.ADMIN) {
+            item {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF151B2B)),
+                    border = CardDefaults.outlinedCardBorder().copy(
+                        brush = androidx.compose.ui.graphics.SolidColor(SurfaceBorderDark)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text(
+                            text = "ШВИДКИЙ ТЕСТ СПОВІЩЕННЯ ДЛЯ КРИВОГО ОЗЕРА (1 РАЗ)",
+                            color = UkrYellow,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            letterSpacing = 0.5.sp
+                        )
+                        Text(
+                            text = "Натисніть для перевірки відтворення сигналу в реальному часі",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = { onTestKryveOzeroAlert(AlertLevel.RED) },
-                            colors = ButtonDefaults.buttonColors(containerColor = AlertRed),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(38.dp)
-                                .testTag("test_red_btn")
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text("Тривога", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
+                            Button(
+                                onClick = { onTestKryveOzeroAlert(AlertLevel.RED) },
+                                colors = ButtonDefaults.buttonColors(containerColor = AlertRed),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(38.dp)
+                                    .testTag("test_red_btn")
+                            ) {
+                                Text("Тривога", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
 
-                        Button(
-                            onClick = { onTestKryveOzeroAlert(AlertLevel.CIVIL_DEFENSE) },
-                            colors = ButtonDefaults.buttonColors(containerColor = AlertCivilDefense),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(38.dp)
-                                .testTag("test_civil_btn")
-                        ) {
-                            Text("Цив. захист", fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                        }
+                            Button(
+                                onClick = { onTestKryveOzeroAlert(AlertLevel.CIVIL_DEFENSE) },
+                                colors = ButtonDefaults.buttonColors(containerColor = AlertCivilDefense),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(38.dp)
+                                    .testTag("test_civil_btn")
+                            ) {
+                                Text("Цив. захист", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
 
-                        Button(
-                            onClick = { onTestKryveOzeroAlert(AlertLevel.SAFE) },
-                            colors = ButtonDefaults.buttonColors(containerColor = AlertGreenClear),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(38.dp)
-                                .testTag("test_clear_btn")
-                        ) {
-                            Text("Відбій", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                            Button(
+                                onClick = { onTestKryveOzeroAlert(AlertLevel.SAFE) },
+                                colors = ButtonDefaults.buttonColors(containerColor = AlertGreenClear),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(38.dp)
+                                    .testTag("test_clear_btn")
+                            ) {
+                                Text("Відбій", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                            }
                         }
                     }
                 }

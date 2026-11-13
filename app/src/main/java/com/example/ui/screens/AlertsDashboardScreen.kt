@@ -59,11 +59,13 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.ai.AiAdvisorUiState
 import com.example.model.AdminBroadcast
 import com.example.model.AlertEventLog
 import com.example.model.AlertLevel
 import com.example.model.RegionItem
 import com.example.model.UserRole
+import com.example.ui.components.AiSafetyCard
 import com.example.ui.theme.AlertCivilDefense
 import com.example.ui.theme.AlertGreenClear
 import com.example.ui.theme.AlertOrangeStreetFight
@@ -98,7 +100,11 @@ fun AlertsDashboardScreen(
     onTriggerStreetFightsAllClear: () -> Unit,
     onOpenAudioSettings: () -> Unit,
     onOpenMap: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    aiState: AiAdvisorUiState = AiAdvisorUiState.Idle,
+    onAnalyzeWithAi: () -> Unit = {},
+    onAskAiQuestion: (String) -> Unit = {},
+    onResetAiState: () -> Unit = {}
 ) {
     val kryveOzero = regions.find { it.id == "kryve_ozero" }
     val monitored = regions.filter { it.isMonitored }
@@ -772,6 +778,16 @@ fun AlertsDashboardScreen(
                     )
                 }
             }
+        }
+
+        // Gemini AI Civil Defense & Safety Advisor Card
+        item {
+            AiSafetyCard(
+                aiState = aiState,
+                onAnalyzeSituation = onAnalyzeWithAi,
+                onAskQuestion = onAskAiQuestion,
+                onResetState = onResetAiState
+            )
         }
 
         // Monitored Regions Horizontal Bar

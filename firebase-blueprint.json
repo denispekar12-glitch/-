@@ -1,0 +1,306 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private user account profile and personal alert/audio preferences scoped strictly to the authenticated user.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User display name for community discussion."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "User email address (private PII, accessible only to the owner)."
+        },
+        "monitoredRegionIds": {
+          "type": "array",
+          "description": "List of region IDs monitored by this user."
+        },
+        "soundVolume": {
+          "type": "number",
+          "description": "Voice alert playback volume from 0.0 to 1.0."
+        },
+        "vibrationEnabled": {
+          "type": "boolean",
+          "description": "Whether haptic vibration is enabled on alerts."
+        },
+        "autoPlayVoice": {
+          "type": "boolean",
+          "description": "Whether incoming real-time alerts play voice audio once automatically."
+        },
+        "onlineChannelId": {
+          "type": "string",
+          "description": "Online broadcast channel identifier."
+        },
+        "dsnsAutoSyncEnabled": {
+          "type": "boolean",
+          "description": "Whether automatic sync with official Ukraine alerts API is enabled."
+        },
+        "selectedTab": {
+          "type": "integer",
+          "description": "Last selected bottom navigation tab index (0..4)."
+        },
+        "selectedRegionId": {
+          "type": "string",
+          "description": "Last selected region ID on map."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp written via FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp written via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": [
+        "userId",
+        "displayName",
+        "email",
+        "monitoredRegionIds",
+        "soundVolume",
+        "vibrationEnabled",
+        "autoPlayVoice",
+        "onlineChannelId",
+        "dsnsAutoSyncEnabled",
+        "selectedTab",
+        "selectedRegionId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AlertRegion": {
+      "title": "AlertRegion",
+      "description": "Live alert state for a Ukrainian region or Kryvoozerska hromada managed by Administrator Denis.",
+      "type": "object",
+      "properties": {
+        "regionName": {
+          "type": "string",
+          "description": "Display name of the region or hromada."
+        },
+        "currentLevel": {
+          "type": "string",
+          "enum": ["SAFE", "YELLOW", "CIVIL_DEFENSE", "RED", "STREET_FIGHTS"],
+          "description": "Primary active alert level."
+        },
+        "activeLevels": {
+          "type": "array",
+          "description": "All simultaneous active alert level names."
+        },
+        "threatDetails": {
+          "type": "string",
+          "description": "Human-readable threat description or all-clear notice."
+        },
+        "adminName": {
+          "type": "string",
+          "description": "Administrator display name."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the administrator who published the update."
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Marks document as readable by signed-in community members."
+        },
+        "alertStartTime": {
+          "type": "integer",
+          "description": "Epoch milliseconds when current alert started, omitted when SAFE."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp written via FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp written via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": [
+        "regionName",
+        "currentLevel",
+        "activeLevels",
+        "threatDetails",
+        "adminName",
+        "updatedByUid",
+        "isPublic",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AlertEvent": {
+      "title": "AlertEvent",
+      "description": "Immutable real-time emergency broadcast or all-clear log event authored by Administrator Denis.",
+      "type": "object",
+      "properties": {
+        "regionId": {
+          "type": "string",
+          "description": "Target region ID or all_ukraine."
+        },
+        "regionName": {
+          "type": "string",
+          "description": "Target region or Ukraine-wide display name."
+        },
+        "level": {
+          "type": "string",
+          "enum": ["SAFE", "YELLOW", "CIVIL_DEFENSE", "RED", "STREET_FIGHTS"],
+          "description": "Primary alert level."
+        },
+        "activeLevels": {
+          "type": "array",
+          "description": "List of alert levels triggered in this event."
+        },
+        "threatDetails": {
+          "type": "string",
+          "description": "Broadcast message and threat details."
+        },
+        "source": {
+          "type": "string",
+          "description": "Origin of the event."
+        },
+        "adminName": {
+          "type": "string",
+          "description": "Administrator display name."
+        },
+        "authorUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the administrator."
+        },
+        "isBroadcastBanner": {
+          "type": "boolean",
+          "description": "Whether this event updates the live top broadcast banner."
+        },
+        "isTotalAllClear": {
+          "type": "boolean",
+          "description": "Whether this event is a Ukraine-wide total all-clear."
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Marks event readable by signed-in community members."
+        },
+        "clientTimestampMs": {
+          "type": "integer",
+          "description": "Client event timestamp in epoch milliseconds for sorting."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp written via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": [
+        "regionId",
+        "regionName",
+        "level",
+        "activeLevels",
+        "threatDetails",
+        "source",
+        "adminName",
+        "authorUid",
+        "isBroadcastBanner",
+        "isTotalAllClear",
+        "isPublic",
+        "clientTimestampMs",
+        "createdAt"
+      ]
+    },
+    "CommunityMessage": {
+      "title": "CommunityMessage",
+      "description": "Real-time community discussion message visible to signed-in users.",
+      "type": "object",
+      "properties": {
+        "authorUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the message author."
+        },
+        "authorName": {
+          "type": "string",
+          "description": "Author display name."
+        },
+        "authorRole": {
+          "type": "string",
+          "enum": ["ADMIN", "USER"],
+          "description": "Verified role of the author."
+        },
+        "text": {
+          "type": "string",
+          "description": "Message body."
+        },
+        "regionTag": {
+          "type": "string",
+          "description": "Tagged hromada or region."
+        },
+        "isAdminVerified": {
+          "type": "boolean",
+          "description": "True only when authored by verified administrator."
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Marks message readable by signed-in community members."
+        },
+        "clientTimestampMs": {
+          "type": "integer",
+          "description": "Client creation timestamp in epoch milliseconds."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp written via FieldValue.serverTimestamp()."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp written via FieldValue.serverTimestamp()."
+        }
+      },
+      "required": [
+        "authorUid",
+        "authorName",
+        "authorRole",
+        "text",
+        "regionTag",
+        "isAdminVerified",
+        "isPublic",
+        "clientTimestampMs",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserProfile"
+      },
+      "description": "Private user settings, monitored region list, and UI preferences isolated by userId."
+    },
+    "/alert_regions/{regionId}": {
+      "schema": {
+        "$ref": "#/entities/AlertRegion"
+      },
+      "description": "Live emergency alert states per region/hromada broadcast by Administrator Denis."
+    },
+    "/alert_events/{eventId}": {
+      "schema": {
+        "$ref": "#/entities/AlertEvent"
+      },
+      "description": "Immutable emergency alert & all-clear event log broadcast by Administrator Denis."
+    },
+    "/community_messages/{messageId}": {
+      "schema": {
+        "$ref": "#/entities/CommunityMessage"
+      },
+      "description": "Live community discussion chat synchronized across signed-in devices."
+    }
+  }
+}
