@@ -1,0 +1,6 @@
+{
+  "name": "Омастротривога",
+  "description": "Офіційна система сповіщення про повітряну тривогу, вуличні бої та відбій у реальному часі з картами та звуковими сигналами",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

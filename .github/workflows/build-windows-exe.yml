@@ -1,0 +1,38 @@
+name: Build Windows PC EXE (OmastroTrivoga)
+
+on:
+  push:
+    paths:
+      - 'desktop_pc/**'
+      - 'app/src/main/res/raw/**'
+      - '.github/workflows/build-windows-exe.yml'
+  workflow_dispatch:
+
+jobs:
+  build-exe:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Build OmastroTrivoga.exe
+        working-directory: desktop_pc
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name "OmastroTrivoga" `
+            --add-data "..\app\src\main\res\raw;assets\audio" `
+            omastro_trivoga_pc.py
+
+      - name: Upload OmastroTrivoga.exe Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OmastroTrivoga-Windows-EXE
+          path: desktop_pc/dist/OmastroTrivoga.exe

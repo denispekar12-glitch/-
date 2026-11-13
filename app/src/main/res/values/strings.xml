@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Омастротривога</string>
+    <string name="nav_alerts">Тривога</string>
+    <string name="nav_map">Мапа</string>
+    <string name="nav_audio">Звуки</string>
+    <string name="nav_admin">Адмін</string>
+</resources>
