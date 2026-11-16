@@ -3,6 +3,8 @@ package com.example.auth
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
 import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
@@ -11,6 +13,7 @@ import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.GetCredentialException
 import androidx.credentials.exceptions.NoCredentialException
+import com.example.R
 import com.example.data.AlertRepository
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
@@ -20,7 +23,6 @@ import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
-import com.google.firebase.auth.OAuthProvider
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
@@ -31,22 +33,55 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.security.MessageDigest
 
 private const val AUTH_TAG = "Auth"
-private const val DEFAULT_WEB_CLIENT_ID_FALLBACK =
-    "74392611696-pf519u9c48ee19oqf4t5oh5kiv7ddg4r.apps.googleusercontent.com"
+private const val EXPECTED_DEBUG_SHA1 = "4B:8A:65:91:77:FC:73:4D:E6:7D:FC:EF:5B:35:47:0B:90:33:43:DB"
 
-private fun resolveWebClientId(context: Context): String {
-    val resId = context.resources.getIdentifier(
-        "default_web_client_id",
-        "string",
-        context.packageName
-    )
-    if (resId != 0) {
-        val value = context.getString(resId).trim()
-        if (value.isNotEmpty()) return value
+private fun resolveWebClientId(context: Context): String? {
+    return try {
+        context.getString(R.string.default_web_client_id).trim().takeIf { it.isNotEmpty() }
+    } catch (e: Exception) {
+        Log.e(AUTH_TAG, "Failed to resolve R.string.default_web_client_id", e)
+        null
     }
-    return DEFAULT_WEB_CLIENT_ID_FALLBACK
+}
+
+@Suppress("DEPRECATION")
+private fun getApkSha1Fingerprint(context: Context): String? {
+    return try {
+        val pkgName = context.packageName
+        val pm = context.packageManager
+        val certBytes: ByteArray? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val info = pm.getPackageInfo(pkgName, PackageManager.GET_SIGNING_CERTIFICATES)
+            val signingInfo = info.signingInfo
+            val certs = if (signingInfo?.hasMultipleSigners() == true) {
+                signingInfo.apkContentsSigners
+            } else {
+                signingInfo?.signingCertificateHistory
+            }
+            certs?.firstOrNull()?.toByteArray()
+        } else {
+            val info = pm.getPackageInfo(pkgName, PackageManager.GET_SIGNATURES)
+            info.signatures?.firstOrNull()?.toByteArray()
+        }
+        certBytes?.let { bytes ->
+            val digest = MessageDigest.getInstance("SHA-1").digest(bytes)
+            digest.joinToString(":") { b -> "%02X".format(b) }
+        }
+    } catch (e: Exception) {
+        Log.w(AUTH_TAG, "Could not inspect APK signing SHA-1: ${e.message}")
+        null
+    }
+}
+
+private fun formatSigningDiagnostic(context: Context, fallbackMessage: String): String {
+    val runtimeSha1 = getApkSha1Fingerprint(context)
+    return if (runtimeSha1 != null && !runtimeSha1.equals(EXPECTED_DEBUG_SHA1, ignoreCase = true)) {
+        "$fallbackMessage\n\nСертифікат цього APK ($runtimeSha1) відрізняється від зареєстрованого Debug SHA-1 ($EXPECTED_DEBUG_SHA1). Встановіть APK (Debug) із GitHub Releases або додайте цей SHA-1 у Firebase Console."
+    } else {
+        fallbackMessage
+    }
 }
 
 internal fun FirebaseAuth.authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
@@ -96,6 +131,10 @@ fun attemptAutoSignIn(
         return
     }
     val clientId = resolveWebClientId(context)
+    if (clientId == null) {
+        onUnauthenticated()
+        return
+    }
 
     val googleIdOption = GetGoogleIdOption.Builder()
         .setFilterByAuthorizedAccounts(true)
@@ -144,23 +183,6 @@ private suspend fun signInWithCredentialManagerOption(
     return false
 }
 
-private suspend fun signInWithFirebaseGoogleWebFlow(activity: Activity) {
-    val provider = OAuthProvider.newBuilder("google.com")
-        .setScopes(listOf("email", "profile"))
-        .addCustomParameter("prompt", "select_account")
-        .build()
-
-    val pendingTask = Firebase.auth.pendingAuthResult
-    if (pendingTask != null) {
-        pendingTask.await()
-        return
-    }
-
-    Firebase.auth
-        .startActivityForSignInWithProvider(activity, provider)
-        .await()
-}
-
 fun onGoogleSignInClicked(
     context: Context,
     credentialManager: CredentialManager,
@@ -170,6 +192,10 @@ fun onGoogleSignInClicked(
     onAuthCancelled: () -> Unit = {}
 ) {
     val clientId = resolveWebClientId(context)
+    if (clientId == null) {
+        onAuthError("Конфігурація Google Sign-In відсутня (default_web_client_id не знайдено).")
+        return
+    }
 
     scope.launch {
         val activity = context.findActivity()
@@ -178,7 +204,7 @@ fun onGoogleSignInClicked(
             return@launch
         }
 
-        // 1. Primary: Credential Manager GetSignInWithGoogleOption (One Tap / Bottom sheet)
+        // Primary: Credential Manager GetSignInWithGoogleOption (single option per request)
         try {
             val signInOption = GetSignInWithGoogleOption.Builder(serverClientId = clientId).build()
             val primaryRequest = GetCredentialRequest.Builder()
@@ -186,25 +212,40 @@ fun onGoogleSignInClicked(
                 .build()
             if (signInWithCredentialManagerOption(activity, credentialManager, primaryRequest)) {
                 onAuthSuccess()
-                return@launch
+            } else {
+                onAuthError("Отримано неочікуваний тип облікових даних Google.")
             }
+            return@launch
         } catch (e: GetCredentialCancellationException) {
             val msg = e.message.orEmpty()
-            Log.w(AUTH_TAG, "Primary Google Sign-In returned cancellation: $msg", e)
+            Log.w(AUTH_TAG, "Google Sign-In cancelled or dismissed: $msg", e)
             val isExplicitUserDismiss = msg.contains("by the user", ignoreCase = true)
             if (isExplicitUserDismiss) {
                 onAuthCancelled()
-                return@launch
+            } else {
+                onAuthError(
+                    formatSigningDiagnostic(
+                        activity,
+                        "Вхід через Google перервано сервісом Google Play. Спробуйте ще раз."
+                    )
+                )
             }
+            return@launch
         } catch (e: NoCredentialException) {
-            Log.w(AUTH_TAG, "NoCredentialException in primary Sign-In, trying fallbacks: ${e.message}")
+            Log.w(AUTH_TAG, "NoCredentialException in GetSignInWithGoogleOption, trying GetGoogleIdOption: ${e.message}")
         } catch (e: GetCredentialException) {
-            Log.w(AUTH_TAG, "GetCredentialException in primary Sign-In, trying fallbacks: ${e.message}", e)
+            Log.e(AUTH_TAG, "GetCredentialException in Google Sign-In: ${e.message}", e)
+            val detail = e.localizedMessage ?: "Помилка сервісу авторизації Google"
+            onAuthError(formatSigningDiagnostic(activity, "Не вдалося увійти через Google: $detail"))
+            return@launch
         } catch (e: Exception) {
-            Log.w(AUTH_TAG, "Unexpected error in primary Sign-In, trying fallbacks: ${e.message}", e)
+            Log.e(AUTH_TAG, "Unexpected error in Google Sign-In", e)
+            val detail = e.localizedMessage ?: "Помилка входу через Google"
+            onAuthError(formatSigningDiagnostic(activity, "Не вдалося увійти через Google: $detail"))
+            return@launch
         }
 
-        // 2. Secondary: Credential Manager GetGoogleIdOption (any Google account on device)
+        // Secondary fallback only when NoCredentialException occurs: GetGoogleIdOption in a separate request
         try {
             val googleIdOption = GetGoogleIdOption.Builder()
                 .setFilterByAuthorizedAccounts(false)
@@ -216,31 +257,16 @@ fun onGoogleSignInClicked(
                 .build()
             if (signInWithCredentialManagerOption(activity, credentialManager, secondaryRequest)) {
                 onAuthSuccess()
-                return@launch
+            } else {
+                onAuthError("На пристрої не знайдено обліковий запис Google для входу.")
             }
         } catch (e: GetCredentialCancellationException) {
-            val msg = e.message.orEmpty()
-            Log.w(AUTH_TAG, "Secondary Google Sign-In returned cancellation: $msg", e)
+            Log.w(AUTH_TAG, "Secondary Google Sign-In cancelled or dismissed: ${e.message}", e)
+            onAuthCancelled()
         } catch (e: Exception) {
-            Log.w(AUTH_TAG, "Secondary Google Sign-In failed, falling back to Firebase OAuth: ${e.message}", e)
-        }
-
-        // 3. Universal Fallback: Firebase Web OAuth via Chrome Custom Tab (works even without Play Services Credential Manager or matching SHA-1)
-        try {
-            signInWithFirebaseGoogleWebFlow(activity)
-            if (Firebase.auth.currentUser != null) {
-                onAuthSuccess()
-            } else {
-                onAuthError("Вхід через Google не завершено. Спробуйте ще раз.")
-            }
-        } catch (e: Exception) {
-            Log.e(AUTH_TAG, "Google Web OAuth fallback failed", e)
-            val errMsg = e.localizedMessage ?: "Помилка входу через Google"
-            if (errMsg.contains("canceled", ignoreCase = true) || errMsg.contains("cancelled", ignoreCase = true)) {
-                onAuthCancelled()
-            } else {
-                onAuthError("Не вдалося увійти через Google: $errMsg")
-            }
+            Log.e(AUTH_TAG, "Secondary Google Sign-In failed", e)
+            val detail = e.localizedMessage ?: "Перевірте підключення та наявність Google-акаунта на пристрої"
+            onAuthError(formatSigningDiagnostic(activity, "Не вдалося увійти через Google: $detail"))
         }
     }
 }

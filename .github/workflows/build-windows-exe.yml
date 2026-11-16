@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build-android-apk:
-    name: Build Android APK (v2.0.2)
+    name: Build Android APK (v2.0.3)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -38,20 +38,19 @@ jobs:
         run: |
           python3 - <<'PY'
           import base64, pathlib
-          try:
-              raw = pathlib.Path("debug.keystore.base64").read_text(encoding="utf-8-sig").strip()
-              data = base64.b64decode("".join(raw.split()))
-              pathlib.Path("debug.keystore").write_bytes(data)
-              print(f"Restored debug.keystore ({len(data)} bytes)")
-          except Exception as exc:
-              print(f"Warning: could not decode debug.keystore.base64: {exc}")
+          raw = pathlib.Path("debug.keystore.base64").read_text(encoding="utf-8-sig").strip()
+          data = base64.b64decode("".join(raw.split()))
+          pathlib.Path("debug.keystore").write_bytes(data)
+          print(f"Restored debug.keystore ({len(data)} bytes)")
           PY
-          if ! keytool -importkeystore -noprompt -srckeystore debug.keystore -srcstorepass android -srcalias androiddebugkey -destkeystore /tmp/verify_debug.p12 -deststorepass android -destkeypass android >/dev/null 2>&1; then
-            echo "Warning: Could not read restored debug.keystore private key; generating fallback debug.keystore"
-            rm -f debug.keystore
-            keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-          fi
+          keytool -importkeystore -noprompt -srckeystore debug.keystore -srcstorepass android -srcalias androiddebugkey -destkeystore /tmp/verify_debug.p12 -deststorepass android -destkeypass android >/dev/null
           rm -f /tmp/verify_debug.p12
+          SHA1_FOUND=$(keytool -list -v -keystore debug.keystore -alias androiddebugkey -storepass android -keypass android | awk -F': ' '/SHA1:/{print $2}' | tr -d '[:space:]')
+          echo "Verified debug.keystore SHA1: $SHA1_FOUND"
+          if [ "$SHA1_FOUND" != "4B:8A:65:91:77:FC:73:4D:E6:7D:FC:EF:5B:35:47:0B:90:33:43:DB" ]; then
+            echo "ERROR: Restored debug.keystore SHA-1 ($SHA1_FOUND) does not match Firebase registered SHA-1!"
+            exit 1
+          fi
 
       - name: Ensure Firebase google-services.json for CI APK build
         run: |
@@ -106,18 +105,18 @@ jobs:
       - name: Package APK with versioned filename
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/OmastroTrivoga-v2.0.2.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/OmastroTrivoga-v2.0.3.apk
 
       - name: Upload Android APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: OmastroTrivoga-Android-APK
-          path: dist/OmastroTrivoga-v2.0.2.apk
+          path: dist/OmastroTrivoga-v2.0.3.apk
           if-no-files-found: error
           retention-days: 90
 
   build-exe:
-    name: Build Windows PC EXE (v2.0.2)
+    name: Build Windows PC EXE (v2.0.3)
     runs-on: windows-latest
     steps:
       - name: Checkout repository
@@ -135,7 +134,7 @@ jobs:
       - name: Install PyInstaller
         run: python -m pip install --upgrade pip pyinstaller
 
-      - name: Build OmastroTrivoga.exe (v2.0.2 with Google Login & 2 Admins)
+      - name: Build OmastroTrivoga.exe (v2.0.3 with Google Login & 2 Admins)
         working-directory: desktop_pc
         run: |
           python -m PyInstaller --noconfirm --clean --onefile --windowed `
@@ -165,9 +164,9 @@ jobs:
       - name: Publish GitHub Release (APK + Windows EXE)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0.2-build.${{ github.run_number }}
-          name: Омастротривога v2.0.2 (Android APK + Windows EXE)
+          tag_name: v2.0.3-build.${{ github.run_number }}
+          name: Омастротривога v2.0.3 (Android APK + Windows EXE)
           files: |
-            release-assets/OmastroTrivoga-Android-APK/OmastroTrivoga-v2.0.2.apk
+            release-assets/OmastroTrivoga-Android-APK/OmastroTrivoga-v2.0.3.apk
             release-assets/OmastroTrivoga-Windows-EXE/OmastroTrivoga.exe
           generate_release_notes: true
