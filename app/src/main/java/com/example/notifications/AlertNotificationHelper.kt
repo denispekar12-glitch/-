@@ -39,7 +39,7 @@ class AlertNotificationHelper(private val context: Context) {
                 CHANNEL_NAME,
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Офіційні сповіщення тривоги, цивільного захисту, вуличних боїв та відбою у реальному часі"
+                description = "Офіційні сповіщення тривоги, ракет, БПЛА, артобстрілів, цивільного захисту, вуличних боїв та відбою"
                 enableVibration(true)
                 vibrationPattern = longArrayOf(0, 300, 150, 300)
                 enableLights(true)
@@ -56,7 +56,8 @@ class AlertNotificationHelper(private val context: Context) {
         regionName: String,
         levels: List<AlertLevel>,
         details: String,
-        isAdminBroadcast: Boolean = true
+        isAdminBroadcast: Boolean = true,
+        withoutAllClear: Boolean = false
     ) {
         val primaryLevel = AlertLevel.primaryOf(levels.toSet())
         val intent = Intent(context, MainActivity::class.java).apply {
@@ -70,14 +71,22 @@ class AlertNotificationHelper(private val context: Context) {
         )
 
         val dangerLevels = levels.filter { it.isDanger }.distinct()
+        val noClearSuffix = if (withoutAllClear && dangerLevels.isNotEmpty()) " [БЕЗ ВІДБОЮ]" else ""
+
         val title = if (dangerLevels.size > 1) {
-            "🚨 [ДЕКІЛЬКА ЗАГРОЗ (${dangerLevels.size})] $regionName"
+            "🚨 [ДЕКІЛЬКА ЗАГРОЗ (${dangerLevels.size})]$noClearSuffix $regionName"
         } else {
             when (primaryLevel) {
-                AlertLevel.RED -> "🚨 [ТРИВОГА В РЕАЛЬНОМУ ЧАСІ] $regionName"
-                AlertLevel.YELLOW -> "⚠️ [ЖОВТИЙ РІВЕНЬ] $regionName"
-                AlertLevel.STREET_FIGHTS -> "🛑 [УВАГА! ВУЛИЧНІ БОЇ] $regionName"
-                AlertLevel.CIVIL_DEFENSE -> "📢 [ВАЖЛИВЕ СПОВІЩЕННЯ ЦИВІЛЬНОГО ЗАХИСТУ] $regionName"
+                AlertLevel.RED -> "🚨 [ТРИВОГА В РЕАЛЬНОМУ ЧАСІ]$noClearSuffix $regionName"
+                AlertLevel.MISSILE -> "🚀 [РАКЕТНА НЕБЕЗПЕКА]$noClearSuffix $regionName"
+                AlertLevel.DRONE -> "🛸 [АТАКА БПЛА / ШАХЕДИ]$noClearSuffix $regionName"
+                AlertLevel.ARTILLERY -> "💥 [ЗАГРОЗА АРТОБСТРІЛУ]$noClearSuffix $regionName"
+                AlertLevel.CHEMICAL -> "☣️ [ХІМІЧНА ЗАГРОЗА]$noClearSuffix $regionName"
+                AlertLevel.RADIATION -> "☢️ [РАДІАЦІЙНА НЕБЕЗПЕКА]$noClearSuffix $regionName"
+                AlertLevel.CUSTOM_ALERT -> "📣 [СПЕЦСИГНАЛ]$noClearSuffix $regionName"
+                AlertLevel.YELLOW -> "⚠️ [ЖОВТИЙ РІВЕНЬ]$noClearSuffix $regionName"
+                AlertLevel.STREET_FIGHTS -> "🛑 [УВАГА! ВУЛИЧНІ БОЇ]$noClearSuffix $regionName"
+                AlertLevel.CIVIL_DEFENSE -> "📢 [ЦИВІЛЬНИЙ ЗАХИСТ]$noClearSuffix $regionName"
                 AlertLevel.SAFE -> "🟢 [ВІДБІЙ ТРИВОГИ] $regionName"
             }
         }
@@ -85,13 +94,7 @@ class AlertNotificationHelper(private val context: Context) {
         val defaultSummary = if (dangerLevels.size > 1) {
             dangerLevels.joinToString("\n") { "• ${it.title}" }
         } else {
-            when (primaryLevel) {
-                AlertLevel.RED -> "Негайно пройдіть до найближчого укриття!"
-                AlertLevel.YELLOW -> "Підвищена небезпека. Перевірте укриття."
-                AlertLevel.STREET_FIGHTS -> "Залишайтеся в укритті і не підходьте до вікон!"
-                AlertLevel.CIVIL_DEFENSE -> "Увага! Важливе сповіщення цивільного захисту. Ознайомтеся з додатком Омастротривога."
-                AlertLevel.SAFE -> "Небезпека минула. Загрози немає."
-            }
+            primaryLevel.defaultThreatNote()
         }
 
         val text = if (details.isNotBlank()) details else defaultSummary
@@ -99,7 +102,7 @@ class AlertNotificationHelper(private val context: Context) {
         val broadcastSubtext = if (isAdminBroadcast) {
             "Оголошено адміністратором Денисом • Омастротривога"
         } else {
-            "Офіційне сповіщення ДСНС України"
+            "Офіційне сповіщення • Омастротривога"
         }
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)

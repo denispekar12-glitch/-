@@ -121,16 +121,30 @@ fun AlertHeaderBar(
                             text = "ОМАСТРО",
                             color = Color.White,
                             fontWeight = FontWeight.Black,
-                            fontSize = 16.sp,
-                            letterSpacing = 0.5.sp
+                            fontSize = 15.sp,
+                            letterSpacing = 0.4.sp
                         )
                         Text(
                             text = "ТРИВОГА",
                             color = AlertRed,
                             fontWeight = FontWeight.Black,
-                            fontSize = 16.sp,
-                            letterSpacing = 0.5.sp
+                            fontSize = 15.sp,
+                            letterSpacing = 0.4.sp
                         )
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Surface(
+                            shape = RoundedCornerShape(5.dp),
+                            color = Color(0xFF1E293B),
+                            modifier = Modifier.testTag("version_badge_v2")
+                        ) {
+                            Text(
+                                text = "v2.0",
+                                color = UkrYellow,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 9.sp,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                            )
+                        }
                     }
 
                     Row(

@@ -148,12 +148,25 @@ fun AuthScreen(
                         fontSize = 22.sp,
                         letterSpacing = 0.8.sp
                     )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = UkrBlue
+                    ) {
+                        Text(
+                            text = "v2.0",
+                            color = UkrYellow,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(6.dp))
 
                 Text(
-                    text = "Система екстреного сповіщення • Кривоозерська громада та вся Україна",
+                    text = "Версія 2.0 • Мапа тривог України, Шахеди, вкладки керування",
                     color = UkrYellow,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,

@@ -17,11 +17,17 @@ val PrimaryLightBlue = Color(0xFF82B1FF)
 // Emergency Alert Status Colors
 val AlertRed = Color(0xFFFF2D55)
 val AlertRedGlow = Color(0x40FF2D55)
+val AlertMissile = Color(0xFFFF1744)
 val AlertYellow = Color(0xFFFFB300)
 val AlertYellowGlow = Color(0x40FFB300)
+val AlertDrone = Color(0xFFFFC400)
 val AlertOrangeStreetFight = Color(0xFFFF6D00)
+val AlertArtillery = Color(0xFFFF5722)
 val AlertCivilDefense = Color(0xFFAB47BC) // Vibrant Purple for Civil Defense
 val AlertCivilDefenseGlow = Color(0x40AB47BC)
+val AlertChemical = Color(0xFF00E5FF) // Toxic Cyan for Chemical threat
+val AlertRadiation = Color(0xFFAEEA00) // Electric Radioactive Lime for Radiation hazard
+val AlertCustomSpecial = Color(0xFF448AFF) // Distinct Electric Blue for Custom Special Alerts
 val AlertGreenClear = Color(0xFF00E676)
 val AlertGreenGlow = Color(0x3300E676)
 

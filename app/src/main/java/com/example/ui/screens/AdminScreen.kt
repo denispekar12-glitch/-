@@ -21,15 +21,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
-import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockReset
-import androidx.compose.material.icons.filled.NotificationsActive
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Wifi
@@ -38,7 +34,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ElevatedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
@@ -70,16 +65,19 @@ import androidx.compose.ui.unit.sp
 import com.example.model.AlertLevel
 import com.example.model.RegionItem
 import com.example.model.UserRole
-import com.example.ui.theme.AlertCivilDefense
+import androidx.compose.material.icons.filled.Public
+import androidx.compose.material3.SecondaryTabRow
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.runtime.mutableIntStateOf
+import com.example.ui.components.ShahedDroneIcon
+import com.example.ui.components.ThreatLevelIcon
+import com.example.ui.components.levelMapColor
 import com.example.ui.theme.AlertGreenClear
-import com.example.ui.theme.AlertOrangeStreetFight
 import com.example.ui.theme.AlertRed
-import com.example.ui.theme.AlertYellow
 import com.example.ui.theme.PrimaryBlue
 import com.example.ui.theme.SurfaceBorderDark
 import com.example.ui.theme.SurfaceCardDark
-import com.example.ui.theme.TextMuted
-import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.UkrBlue
 import com.example.ui.theme.UkrYellow
@@ -96,12 +94,15 @@ fun AdminScreen(
     dsnsAutoSyncEnabled: Boolean,
     onOpenPinDialog: () -> Unit,
     onLockToUserRole: () -> Unit,
-    onSetAlertLevel: (String, AlertLevel, String) -> Unit,
-    onSetRegionActiveAlerts: (String, Set<AlertLevel>, String) -> Unit,
-    onToggleRegionAlertType: (String, AlertLevel) -> Unit,
-    onSetMultipleRegionsActiveAlerts: (List<String>, Set<AlertLevel>, String) -> Unit,
-    onTriggerTotalAllClear: () -> Unit,
-    onTriggerStreetFightsAllClear: () -> Unit,
+    onSetAlertLevel: (String, AlertLevel, String, Boolean) -> Unit,
+    onSetRegionActiveAlerts: (String, Set<AlertLevel>, String, Boolean) -> Unit,
+    onToggleRegionAlertType: (String, AlertLevel, Boolean) -> Unit,
+    onSetMultipleRegionsActiveAlerts: (List<String>, Set<AlertLevel>, String, Boolean) -> Unit,
+    onClearRegion: (String, Boolean) -> Unit,
+    onTriggerTotalAllClear: (Boolean) -> Unit,
+    onTriggerAllUkraineAlert: (AlertLevel, Set<AlertLevel>, String, Boolean) -> Unit = { _, _, _, _ -> },
+    onTriggerStreetFightsAllClear: (Boolean) -> Unit,
+    onTriggerSpecificAllClear: (String, AlertLevel, Boolean) -> Unit = { _, _, _ -> },
     onSyncNow: () -> Unit,
     onUpdateOnlineChannel: (String) -> Unit,
     onToggleDsnsAutoSync: (Boolean) -> Unit,
@@ -112,7 +113,6 @@ fun AdminScreen(
     onSignOut: () -> Unit = {}
 ) {
     if (userRole == UserRole.USER) {
-        // Restricted View for non-admin users
         Box(
             modifier = modifier
                 .fillMaxSize()
@@ -170,7 +170,7 @@ fun AdminScreen(
                     Spacer(modifier = Modifier.height(8.dp))
 
                     Text(
-                        text = "Єдиним адміністратором системи є Денис (denispekar12@gmail.com).\n\nДля вас увімкнено режим користувача: ви отримуєте сповіщення у реальному часі, коли адміністратор або ДСНС оголошує тривогу, вуличні бої чи відбій. Сигнал звучить рівно один раз.",
+                        text = "Адміністраторами системи є Денис (denispekar12@gmail.com) та другий адміністратор (semenenkom342@gmail.com).\n\nДля вас увімкнено режим користувача: ви отримуєте сповіщення по районах у реальному часі, коли адміністратор оголошує тривогу чи відбій.",
                         color = TextSecondary,
                         fontSize = 13.sp,
                         lineHeight = 18.sp,
@@ -196,7 +196,7 @@ fun AdminScreen(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Розблокувати панель Дениса",
+                                text = "Розблокувати панель адміністратора",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp
                             )
@@ -230,25 +230,26 @@ fun AdminScreen(
             }
         }
     } else {
-        // Full Admin Control Room for Denis
         AdminControlPanel(
             regions = regions,
             isApiConnected = isApiConnected,
             isSyncing = isSyncing,
             onlineStatusMessage = onlineStatusMessage,
             onlineChannelId = onlineChannelId,
-            dsnsAutoSyncEnabled = dsnsAutoSyncEnabled,
             onLockToUserRole = onLockToUserRole,
             onSetAlertLevel = onSetAlertLevel,
             onSetRegionActiveAlerts = onSetRegionActiveAlerts,
             onToggleRegionAlertType = onToggleRegionAlertType,
             onSetMultipleRegionsActiveAlerts = onSetMultipleRegionsActiveAlerts,
+            onClearRegion = onClearRegion,
             onTriggerTotalAllClear = onTriggerTotalAllClear,
+            onTriggerAllUkraineAlert = onTriggerAllUkraineAlert,
             onTriggerStreetFightsAllClear = onTriggerStreetFightsAllClear,
+            onTriggerSpecificAllClear = onTriggerSpecificAllClear,
             onSyncNow = onSyncNow,
             onUpdateOnlineChannel = onUpdateOnlineChannel,
-            onToggleDsnsAutoSync = onToggleDsnsAutoSync,
             onUpdatePin = onUpdatePin,
+            userEmail = userEmail,
             modifier = modifier
         )
     }
@@ -262,27 +263,31 @@ private fun AdminControlPanel(
     isSyncing: Boolean,
     onlineStatusMessage: String,
     onlineChannelId: String,
-    dsnsAutoSyncEnabled: Boolean,
     onLockToUserRole: () -> Unit,
-    onSetAlertLevel: (String, AlertLevel, String) -> Unit,
-    onSetRegionActiveAlerts: (String, Set<AlertLevel>, String) -> Unit,
-    onToggleRegionAlertType: (String, AlertLevel) -> Unit,
-    onSetMultipleRegionsActiveAlerts: (List<String>, Set<AlertLevel>, String) -> Unit,
-    onTriggerTotalAllClear: () -> Unit,
-    onTriggerStreetFightsAllClear: () -> Unit,
+    onSetAlertLevel: (String, AlertLevel, String, Boolean) -> Unit,
+    onSetRegionActiveAlerts: (String, Set<AlertLevel>, String, Boolean) -> Unit,
+    onToggleRegionAlertType: (String, AlertLevel, Boolean) -> Unit,
+    onSetMultipleRegionsActiveAlerts: (List<String>, Set<AlertLevel>, String, Boolean) -> Unit,
+    onClearRegion: (String, Boolean) -> Unit,
+    onTriggerTotalAllClear: (Boolean) -> Unit,
+    onTriggerAllUkraineAlert: (AlertLevel, Set<AlertLevel>, String, Boolean) -> Unit,
+    onTriggerStreetFightsAllClear: (Boolean) -> Unit,
+    onTriggerSpecificAllClear: (String, AlertLevel, Boolean) -> Unit,
     onSyncNow: () -> Unit,
     onUpdateOnlineChannel: (String) -> Unit,
-    onToggleDsnsAutoSync: (Boolean) -> Unit,
     onUpdatePin: (String) -> Unit,
+    userEmail: String = "",
     modifier: Modifier = Modifier
 ) {
     val kryveOzero = regions.find { it.id == "kryve_ozero" }
 
+    var noAllClearFlag by remember { mutableStateOf(false) }
+
     var kryveOzeroComboSelection by remember(kryveOzero?.effectiveActiveAlerts) {
         mutableStateOf(
             kryveOzero?.effectiveActiveAlerts?.toSet()?.ifEmpty {
-                setOf(AlertLevel.STREET_FIGHTS, AlertLevel.CIVIL_DEFENSE)
-            } ?: setOf(AlertLevel.STREET_FIGHTS, AlertLevel.CIVIL_DEFENSE)
+                setOf(AlertLevel.RED, AlertLevel.DRONE)
+            } ?: setOf(AlertLevel.RED, AlertLevel.DRONE)
         )
     }
 
@@ -293,7 +298,7 @@ private fun AdminControlPanel(
         mutableStateOf(setOf(kryveOzero?.id ?: "kryve_ozero"))
     }
     var selectedMultiAlertLevels by remember {
-        mutableStateOf(setOf(AlertLevel.STREET_FIGHTS, AlertLevel.CIVIL_DEFENSE))
+        mutableStateOf(setOf(AlertLevel.RED, AlertLevel.MISSILE))
     }
     var threatNote by remember { mutableStateOf("") }
     var isDropdownExpanded by remember { mutableStateOf(false) }
@@ -311,7 +316,7 @@ private fun AdminControlPanel(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Admin Badge Bar - Denis Owner
+        // Admin Badge Bar
         item {
             Card(
                 shape = RoundedCornerShape(18.dp),
@@ -347,7 +352,7 @@ private fun AdminControlPanel(
                         Column {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    text = "ГОЛОВНИЙ АДМІНІСТРАТОР",
+                                    text = "АДМІНІСТРАТОР СИСТЕМИ",
                                     color = Color.White,
                                     fontWeight = FontWeight.Black,
                                     fontSize = 13.sp
@@ -358,16 +363,20 @@ private fun AdminControlPanel(
                                     color = UkrYellow
                                 ) {
                                     Text(
-                                        text = "ДЕНИС",
+                                        text = if (userEmail.equals("semenenkom342@gmail.com", ignoreCase = true)) {
+                                            "АДМІН #2 • v2.0"
+                                        } else {
+                                            "ДЕНИС • v2.0"
+                                        },
                                         color = Color.Black,
                                         fontSize = 9.sp,
                                         fontWeight = FontWeight.Black,
-                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
                                     )
                                 }
                             }
                             Text(
-                                text = "denispekar12@gmail.com • Повний доступ",
+                                text = "${userEmail.ifBlank { "denispekar12@gmail.com" }} • Версія 2.0",
                                 color = UkrYellow,
                                 fontSize = 11.sp
                             )
@@ -392,7 +401,53 @@ private fun AdminControlPanel(
             }
         }
 
-        // Live Real-Time Emergency Broadcast for Kryvoozerska hromada
+        // Global Mode Toggle: Без відбою
+        item {
+            Card(
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF151B2B)),
+                border = CardDefaults.outlinedCardBorder().copy(
+                    brush = androidx.compose.ui.graphics.SolidColor(
+                        if (noAllClearFlag) UkrYellow else SurfaceBorderDark
+                    )
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Режим оголошення: БЕЗ ВІДБОЮ",
+                            color = if (noAllClearFlag) UkrYellow else Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                        Text(
+                            text = "Якщо увімкнено — позначає сигнал як [БЕЗ ВІДБОЮ] і не відтворює сирену відбою",
+                            color = TextSecondary,
+                            fontSize = 11.sp
+                        )
+                    }
+                    Switch(
+                        checked = noAllClearFlag,
+                        onCheckedChange = { noAllClearFlag = it },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.Black,
+                            checkedTrackColor = UkrYellow,
+                            uncheckedThumbColor = TextSecondary,
+                            uncheckedTrackColor = SurfaceBorderDark
+                        )
+                    )
+                }
+            }
+        }
+
+        // Live Broadcast for Kryvoozerska hromada
         item {
             Card(
                 shape = RoundedCornerShape(18.dp),
@@ -404,125 +459,171 @@ private fun AdminControlPanel(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "ПРЯМИЙ ЕФІР: КРИВООЗЕРСЬКА ГРОМАДА (КРИВЕ ОЗЕРО)",
+                        text = "КРИВООЗЕРСЬКА ГРОМАДА (ПЕРВОМАЙСЬКИЙ Р-Н)",
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp,
                         letterSpacing = 0.5.sp
                     )
                     Text(
-                        text = "Один дотик відправляє сповіщення в реальному часі та озвучує сигнал 1 раз",
+                        text = "Усі типи тривог • Зберігається навіть на наступний день",
                         color = UkrYellow,
                         fontSize = 11.sp
                     )
 
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                onSetAlertLevel(
-                                    "kryve_ozero",
-                                    AlertLevel.RED,
-                                    "Повітряна тривога: загроза балістики та БПЛА! Перейдіть в укриття!"
-                                )
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = AlertRed),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(46.dp)
-                                .testTag("admin_broadcast_red")
-                        ) {
-                            Text("🚨 Тривога (1 раз)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-
-                        Button(
-                            onClick = {
-                                onSetAlertLevel(
-                                    "kryve_ozero",
-                                    AlertLevel.YELLOW,
-                                    "Жовтий рівень: підвищена загроза удару!"
-                                )
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = AlertYellow),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(46.dp)
-                                .testTag("admin_broadcast_yellow")
-                        ) {
-                            Text("⚠️ Жовтий (1 раз)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     Button(
                         onClick = {
-                            onSetAlertLevel(
-                                "kryve_ozero",
-                                AlertLevel.CIVIL_DEFENSE,
-                                "Важливе сповіщення цивільного захисту! Ознайомтеся з додатком Омастротривога."
+                            onTriggerAllUkraineAlert(
+                                AlertLevel.RED,
+                                setOf(AlertLevel.RED),
+                                threatNote,
+                                noAllClearFlag
                             )
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = AlertCivilDefense),
-                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFFD92638),
+                            contentColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(46.dp)
-                            .testTag("admin_broadcast_civil")
+                            .height(48.dp)
+                            .testTag("admin_all_ukraine_alert_btn")
                     ) {
-                        Text("📢 Важливе сповіщення цивільного захисту (1 раз)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Icon(
+                            imageVector = Icons.Default.Public,
+                            contentDescription = null,
+                            tint = UkrYellow,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "🚨 ТРИВОГА ПО ВСІЙ УКРАЇНІ",
+                            fontWeight = FontWeight.Black,
+                            fontSize = 13.sp
+                        )
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
+                    var adminThreatTab by remember { mutableIntStateOf(0) }
+                    val adminTabNames = listOf("Повітря / Шахед", "Бої / Арта / ЦЗ", "Хімія / Радіо")
+                    SecondaryTabRow(
+                        selectedTabIndex = adminThreatTab,
+                        containerColor = Color(0xFF0E1320),
+                        contentColor = UkrYellow,
+                        indicator = {
+                            TabRowDefaults.SecondaryIndicator(
+                                modifier = Modifier.tabIndicatorOffset(adminThreatTab),
+                                color = UkrYellow
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        adminTabNames.forEachIndexed { idx, name ->
+                            Tab(
+                                selected = adminThreatTab == idx,
+                                onClick = { adminThreatTab = idx },
+                                text = {
+                                    Text(
+                                        text = name,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (adminThreatTab == idx) UkrYellow else TextSecondary
+                                    )
+                                }
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    val tabLevels = when (adminThreatTab) {
+                        0 -> listOf(AlertLevel.RED, AlertLevel.MISSILE, AlertLevel.DRONE, AlertLevel.YELLOW)
+                        1 -> listOf(AlertLevel.ARTILLERY, AlertLevel.STREET_FIGHTS, AlertLevel.CIVIL_DEFENSE, AlertLevel.CUSTOM_ALERT)
+                        else -> listOf(AlertLevel.CHEMICAL, AlertLevel.RADIATION)
+                    }
+
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        tabLevels.forEach { lvl ->
+                            val c = levelMapColor(lvl)
+                            val tag = when (lvl) {
+                                AlertLevel.RED -> "admin_broadcast_red"
+                                AlertLevel.YELLOW -> "admin_broadcast_yellow"
+                                AlertLevel.CIVIL_DEFENSE -> "admin_broadcast_civil"
+                                AlertLevel.STREET_FIGHTS -> "admin_broadcast_street"
+                                else -> "admin_broadcast_${lvl.name.lowercase()}"
+                            }
+                            val darkInk = lvl == AlertLevel.YELLOW || lvl == AlertLevel.DRONE || lvl == AlertLevel.CHEMICAL || lvl == AlertLevel.RADIATION
+                            Button(
+                                onClick = {
+                                    onSetAlertLevel("kryve_ozero", lvl, lvl.defaultThreatNote(), noAllClearFlag)
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = c,
+                                    contentColor = if (darkInk) Color.Black else Color.White
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                modifier = Modifier
+                                    .height(42.dp)
+                                    .testTag(tag)
+                            ) {
+                                ThreatLevelIcon(
+                                    level = lvl,
+                                    size = 16.dp,
+                                    tint = if (lvl == AlertLevel.DRONE) Color(0xFFB91C1C) else if (darkInk) Color.Black else Color.White
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(lvl.shortName, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Both Відбій AND Без відбою buttons
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Button(
-                            onClick = {
-                                onSetAlertLevel(
-                                    "kryve_ozero",
-                                    AlertLevel.STREET_FIGHTS,
-                                    "Вуличні бої в межах населеного пункту! Залишайтеся в укритті і не підходьте до вікон!"
-                                )
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = AlertOrangeStreetFight),
+                            onClick = { onClearRegion("kryve_ozero", true) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = AlertGreenClear,
+                                contentColor = Color.Black
+                            ),
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .weight(1f)
-                                .height(46.dp)
-                                .testTag("admin_broadcast_street")
+                                .height(44.dp)
+                                .testTag("admin_broadcast_clear")
                         ) {
-                            Text("🛑 Вуличні бої", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text("🟢 З відбоєм", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
 
                         Button(
-                            onClick = {
-                                onSetAlertLevel(
-                                    "kryve_ozero",
-                                    AlertLevel.SAFE,
-                                    "Відбій повітряної тривоги. Небезпека минула."
-                                )
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = AlertGreenClear),
+                            onClick = { onClearRegion("kryve_ozero", false) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF282210),
+                                contentColor = UkrYellow
+                            ),
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .weight(1f)
-                                .height(46.dp)
-                                .testTag("admin_broadcast_clear")
+                                .height(44.dp)
+                                .testTag("admin_broadcast_clear_silent")
                         ) {
-                            Text("🟢 Відбій (1 раз)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                            Text("🔇 Без відбою", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
 
-                    // Active multi-alert status chips for Kryve Ozero
                     val activeKoAlerts = kryveOzero?.effectiveActiveAlerts.orEmpty()
                     if (activeKoAlerts.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(12.dp))
@@ -538,12 +639,12 @@ private fun AdminControlPanel(
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             activeKoAlerts.forEach { lvl ->
-                                val c = adminAlertColor(lvl)
+                                val c = levelMapColor(lvl)
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
                                     color = c.copy(alpha = 0.22f),
                                     modifier = Modifier.clickable {
-                                        onToggleRegionAlertType("kryve_ozero", lvl)
+                                        onToggleRegionAlertType("kryve_ozero", lvl, noAllClearFlag)
                                     }
                                 ) {
                                     Row(
@@ -571,7 +672,7 @@ private fun AdminControlPanel(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // Multi-alert combination builder for Kryve Ozero
+                    // Multi-alert combination builder
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -585,11 +686,6 @@ private fun AdminControlPanel(
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Black
                         )
-                        Text(
-                            text = "Наприклад: Вуличні бої + Оповіщення цивільного захисту",
-                            color = TextSecondary,
-                            fontSize = 10.sp
-                        )
                         Spacer(modifier = Modifier.height(8.dp))
 
                         FlowRow(
@@ -598,7 +694,7 @@ private fun AdminControlPanel(
                         ) {
                             AlertLevel.dangerLevels.forEach { lvl ->
                                 val picked = kryveOzeroComboSelection.contains(lvl)
-                                val chipColor = adminAlertColor(lvl)
+                                val chipColor = levelMapColor(lvl)
                                 FilterChip(
                                     selected = picked,
                                     onClick = {
@@ -638,7 +734,8 @@ private fun AdminControlPanel(
                                     onSetRegionActiveAlerts(
                                         "kryve_ozero",
                                         preset,
-                                        "Вуличні бої та важливе сповіщення цивільного захисту!"
+                                        "Вуличні бої та важливе сповіщення цивільного захисту!",
+                                        noAllClearFlag
                                     )
                                 },
                                 shape = RoundedCornerShape(8.dp),
@@ -653,7 +750,7 @@ private fun AdminControlPanel(
                             Button(
                                 onClick = {
                                     if (kryveOzeroComboSelection.isNotEmpty()) {
-                                        onSetRegionActiveAlerts("kryve_ozero", kryveOzeroComboSelection, "")
+                                        onSetRegionActiveAlerts("kryve_ozero", kryveOzeroComboSelection, "", noAllClearFlag)
                                     }
                                 },
                                 enabled = kryveOzeroComboSelection.isNotEmpty(),
@@ -679,7 +776,7 @@ private fun AdminControlPanel(
             }
         }
 
-        // Master All-Clear Controls (Весь відбій по Україні та Відбій вуличних боїв)
+        // Master Clear Controls (З відбоєм та Без відбою)
         item {
             Card(
                 shape = RoundedCornerShape(18.dp),
@@ -692,71 +789,79 @@ private fun AdminControlPanel(
                     .testTag("admin_master_clear_card")
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(34.dp)
-                                    .clip(CircleShape)
-                                    .background(AlertGreenClear.copy(alpha = 0.2f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = null,
-                                    tint = AlertGreenClear,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column {
-                                Text(
-                                    text = "ТОТАЛЬНИЙ ВІДБІЙ ТА ВУЛИЧНІ БОЇ",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Black,
-                                    fontSize = 13.sp,
-                                    letterSpacing = 0.5.sp
-                                )
-                                Text(
-                                    text = "Миттєве скасування небезпеки одним дотиком",
-                                    color = AlertGreenClear,
-                                    fontSize = 11.sp
-                                )
-                            }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(AlertGreenClear.copy(alpha = 0.2f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = null,
+                                tint = AlertGreenClear,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "ВІДБІЙ ТА ЗНЯТТЯ ТРИВОГ ПО ВСІХ РАЙОНАХ",
+                                color = Color.White,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 13.sp,
+                                letterSpacing = 0.5.sp
+                            )
+                            Text(
+                                text = "Можна зняти з голосовим відбоєм або тихо (без відбою)",
+                                color = AlertGreenClear,
+                                fontSize = 11.sp
+                            )
                         }
                     }
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // 1-Tap Total All Clear across all Ukraine
-                    Button(
-                        onClick = onTriggerTotalAllClear,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = AlertGreenClear,
-                            contentColor = Color.Black
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp)
-                            .testTag("admin_trigger_total_clear_btn")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(
-                            text = "🟢 ВЕСЬ ВІДБІЙ (ДЛЯ ВСІЄЇ УКРАЇНИ)",
-                            fontWeight = FontWeight.Black,
-                            fontSize = 13.sp
-                        )
+                        Button(
+                            onClick = { onTriggerTotalAllClear(false) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = AlertGreenClear,
+                                contentColor = Color.Black
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .testTag("admin_trigger_total_clear_btn")
+                        ) {
+                            Text("🟢 ВЕСЬ ВІДБІЙ", fontWeight = FontWeight.Black, fontSize = 12.sp)
+                        }
+
+                        Button(
+                            onClick = { onTriggerTotalAllClear(true) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF282210),
+                                contentColor = UkrYellow
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .testTag("admin_trigger_total_silent_clear_btn")
+                        ) {
+                            Text("🔇 Зняти без відбою", fontWeight = FontWeight.Black, fontSize = 11.sp)
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    // 1-Tap Street Fights All Clear
                     Button(
-                        onClick = onTriggerStreetFightsAllClear,
+                        onClick = { onTriggerStreetFightsAllClear(noAllClearFlag) },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Color(0xFF1E3A2B),
                             contentColor = Color.White
@@ -764,21 +869,57 @@ private fun AdminControlPanel(
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(46.dp)
+                            .height(44.dp)
                             .testTag("admin_trigger_street_fights_clear_btn")
                     ) {
                         Text(
-                            text = "🛡️ ВІДБІЙ ВУЛИЧНИХ БОЇВ (СИТУАЦІЯ ПІД КОНТРОЛЕМ)",
+                            text = if (noAllClearFlag) "🛡️ Зняти вуличні бої (без відбою)" else "🛡️ ВІДБІЙ ВУЛИЧНИХ БОЇВ",
                             fontWeight = FontWeight.Bold,
                             fontSize = 12.sp,
                             color = AlertGreenClear
                         )
                     }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    val targetClearRegionId = selectedRegionForBroadcast?.id ?: "kryve_ozero"
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val specificClears = listOf(
+                            Triple(AlertLevel.CIVIL_DEFENSE, "📢 Відбій цив. захисту", "admin_trigger_civil_defense_clear_btn"),
+                            Triple(AlertLevel.ARTILLERY, "💥 Відбій артобстрілу", "admin_trigger_artillery_clear_btn"),
+                            Triple(AlertLevel.CHEMICAL, "☣️ Відбій хімії", "admin_trigger_chemical_clear_btn"),
+                            Triple(AlertLevel.RADIATION, "☢️ Відбій радіації", "admin_trigger_radiation_clear_btn")
+                        )
+                        specificClears.forEach { (lvl, label, tag) ->
+                            Button(
+                                onClick = { onTriggerSpecificAllClear(targetClearRegionId, lvl, noAllClearFlag) },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF1E3A2B),
+                                    contentColor = AlertGreenClear
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                modifier = Modifier
+                                    .height(40.dp)
+                                    .testTag(tag)
+                            ) {
+                                Text(
+                                    text = if (noAllClearFlag) "$label (без відбою)" else label,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        // Broadcast multiple alerts across one or multiple regions
+        // Broadcast multiple alerts across one or multiple districts (райони)
         item {
             Card(
                 shape = RoundedCornerShape(18.dp),
@@ -790,13 +931,13 @@ private fun AdminControlPanel(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = "ОГОЛОШЕННЯ КІЛЬКОХ ТРИВОГ ПО ОБЛАСТЯХ",
+                        text = "ОГОЛОШЕННЯ ТРИВОГ ПО РАЙОНАХ ТА ГРОМАДАХ",
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp
                     )
                     Text(
-                        text = "Оберіть одну чи кілька областей та поєднайте потрібні типи тривог",
+                        text = "Оберіть один чи кілька районів, потрібні загрози та режим відбою",
                         color = TextSecondary,
                         fontSize = 11.sp
                     )
@@ -808,10 +949,10 @@ private fun AdminControlPanel(
                         onExpandedChange = { isDropdownExpanded = it }
                     ) {
                         OutlinedTextField(
-                            value = selectedRegionForBroadcast?.name ?: "Виберіть область",
+                            value = selectedRegionForBroadcast?.name ?: "Виберіть район",
                             onValueChange = {},
                             readOnly = true,
-                            label = { Text("Додати область / громаду до розсилки") },
+                            label = { Text("Додати район / громаду до розсилки") },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = isDropdownExpanded) },
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = UkrYellow,
@@ -831,7 +972,7 @@ private fun AdminControlPanel(
                         ) {
                             regions.forEach { reg ->
                                 DropdownMenuItem(
-                                    text = { Text(reg.name) },
+                                    text = { Text("${reg.name} (${reg.oblast})") },
                                     onClick = {
                                         selectedRegionForBroadcast = reg
                                         selectedMultiRegionIds = selectedMultiRegionIds + reg.id
@@ -845,7 +986,7 @@ private fun AdminControlPanel(
                     if (selectedMultiRegionIds.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Обрані регіони (${selectedMultiRegionIds.size}):",
+                            text = "Обрані райони (${selectedMultiRegionIds.size}):",
                             color = UkrYellow,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
@@ -896,7 +1037,7 @@ private fun AdminControlPanel(
                     Spacer(modifier = Modifier.height(10.dp))
 
                     Text(
-                        text = "Оберіть одну або кілька тривог:",
+                        text = "Оберіть одну або кілька загроз:",
                         color = TextSecondary,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold
@@ -908,7 +1049,7 @@ private fun AdminControlPanel(
                     ) {
                         AlertLevel.dangerLevels.forEach { lvl ->
                             val picked = selectedMultiAlertLevels.contains(lvl)
-                            val c = adminAlertColor(lvl)
+                            val c = levelMapColor(lvl)
                             FilterChip(
                                 selected = picked,
                                 onClick = {
@@ -940,7 +1081,7 @@ private fun AdminControlPanel(
                     OutlinedTextField(
                         value = threatNote,
                         onValueChange = { threatNote = it },
-                        label = { Text("Коментар загрози (наприклад: шахеди, вуличні бої)") },
+                        label = { Text("Коментар (наприклад: балістика на район / шахеди)") },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = UkrYellow,
                             unfocusedBorderColor = SurfaceBorderDark,
@@ -953,42 +1094,47 @@ private fun AdminControlPanel(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
+                    Button(
+                        onClick = {
+                            if (selectedMultiRegionIds.isNotEmpty() && selectedMultiAlertLevels.isNotEmpty()) {
+                                onSetMultipleRegionsActiveAlerts(
+                                    selectedMultiRegionIds.toList(),
+                                    selectedMultiAlertLevels,
+                                    threatNote,
+                                    noAllClearFlag
+                                )
+                            }
+                        },
+                        enabled = selectedMultiRegionIds.isNotEmpty() && selectedMultiAlertLevels.isNotEmpty(),
+                        colors = ButtonDefaults.buttonColors(containerColor = AlertRed),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp)
+                            .testTag("admin_multi_region_broadcast_btn")
+                    ) {
+                        Text(
+                            text = "🚨 Оголосити (${selectedMultiAlertLevels.size} для ${selectedMultiRegionIds.size} р-нів)" +
+                                if (noAllClearFlag) " [Без відбою]" else "",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Button(
                             onClick = {
-                                if (selectedMultiRegionIds.isNotEmpty() && selectedMultiAlertLevels.isNotEmpty()) {
-                                    onSetMultipleRegionsActiveAlerts(
-                                        selectedMultiRegionIds.toList(),
-                                        selectedMultiAlertLevels,
-                                        threatNote
-                                    )
-                                }
-                            },
-                            enabled = selectedMultiRegionIds.isNotEmpty() && selectedMultiAlertLevels.isNotEmpty(),
-                            colors = ButtonDefaults.buttonColors(containerColor = AlertRed),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .weight(1.4f)
-                                .height(44.dp)
-                                .testTag("admin_multi_region_broadcast_btn")
-                        ) {
-                            Text(
-                                text = "🚨 Оголосити (${selectedMultiAlertLevels.size} для ${selectedMultiRegionIds.size} рег.)",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-
-                        Button(
-                            onClick = {
                                 if (selectedMultiRegionIds.isNotEmpty()) {
                                     onSetMultipleRegionsActiveAlerts(
                                         selectedMultiRegionIds.toList(),
                                         emptySet(),
-                                        "Відбій загрози. Спокійно."
+                                        "Відбій загрози. Спокійно.",
+                                        false
                                     )
                                 }
                             },
@@ -998,10 +1144,33 @@ private fun AdminControlPanel(
                             ),
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
-                                .weight(0.6f)
-                                .height(44.dp)
+                                .weight(1f)
+                                .height(42.dp)
                         ) {
-                            Text("Відбій", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text("🟢 З відбоєм", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        Button(
+                            onClick = {
+                                if (selectedMultiRegionIds.isNotEmpty()) {
+                                    onSetMultipleRegionsActiveAlerts(
+                                        selectedMultiRegionIds.toList(),
+                                        emptySet(),
+                                        "Тривогу знято (без відбою).",
+                                        true
+                                    )
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF282210),
+                                contentColor = UkrYellow
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(42.dp)
+                        ) {
+                            Text("🔇 Без відбою", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -1038,10 +1207,10 @@ private fun AdminControlPanel(
                             Spacer(modifier = Modifier.width(8.dp))
                             Column {
                                 Text(
-                                    text = "ОНЛАЙН-ЕФІР ТА АВТОЗБЕРЕЖЕННЯ",
+                                    text = "ДОВГОТРИВАЛЕ ЗБЕРЕЖЕННЯ ТА СИНХРОНІЗАЦІЯ",
                                     color = Color.White,
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp
+                                    fontSize = 12.sp
                                 )
                                 Text(
                                     text = onlineStatusMessage,
@@ -1067,53 +1236,6 @@ private fun AdminControlPanel(
                                 text = if (isSyncing) "Синхр..." else "Оновити",
                                 fontSize = 11.sp
                             )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Surface(
-                        color = Color(0xFF10192B),
-                        shape = RoundedCornerShape(10.dp),
-                        border = androidx.compose.foundation.BorderStroke(
-                            width = 1.dp,
-                            color = AlertGreenClear.copy(alpha = 0.4f)
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Ручний режим тривог (лише Денис)",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp
-                                )
-                                Text(
-                                    text = "Автоматичні тривоги вимкнено — тривоги оголошуєте та знімаєте лише ви.",
-                                    color = TextSecondary,
-                                    fontSize = 11.sp
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Surface(
-                                color = AlertGreenClear.copy(alpha = 0.16f),
-                                shape = RoundedCornerShape(6.dp)
-                            ) {
-                                Text(
-                                    text = "АВТО ВИМКНЕНО",
-                                    color = AlertGreenClear,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 10.sp,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
-                            }
                         }
                     }
 
@@ -1164,7 +1286,7 @@ private fun AdminControlPanel(
 
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "✓ Усі тривоги, відстежувані громади, чат і звуки зберігаються автоматично.",
+                        text = "✓ Усі тривоги по районах, обрані до 3 райони, історія, чат і звуки не зникають на другий день.",
                         color = AlertGreenClear,
                         fontSize = 11.sp
                     )
@@ -1249,12 +1371,4 @@ private fun AdminControlPanel(
             }
         }
     }
-}
-
-private fun adminAlertColor(level: AlertLevel): Color = when (level) {
-    AlertLevel.RED -> AlertRed
-    AlertLevel.YELLOW -> AlertYellow
-    AlertLevel.STREET_FIGHTS -> AlertOrangeStreetFight
-    AlertLevel.CIVIL_DEFENSE -> AlertCivilDefense
-    AlertLevel.SAFE -> AlertGreenClear
 }

@@ -24,19 +24,25 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Sole Administrator: Denis (denispekar12@gmail.com) with verified email,
-    // or explicit /admins/{uid} marker document.
+    // Administrators: Denis (denispekar12@gmail.com) and 2nd Admin (semenenkom342@gmail.com)
+    // with verified emails, or explicit /admins/{uid} marker document.
     function isAdmin() {
       return isSignedIn() && (
         (request.auth.token.email is string &&
-         request.auth.token.email.lower() == 'denispekar12@gmail.com' &&
+         request.auth.token.email.lower() in [
+           'denispekar12@gmail.com',
+           'semenenkom342@gmail.com'
+         ] &&
          request.auth.token.email_verified == true) ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
 
     function isValidAlertLevel(lvl) {
-      return lvl in ['SAFE', 'YELLOW', 'CIVIL_DEFENSE', 'RED', 'STREET_FIGHTS'];
+      return lvl in [
+        'SAFE', 'YELLOW', 'CIVIL_DEFENSE', 'RED', 'STREET_FIGHTS',
+        'MISSILE', 'DRONE', 'ARTILLERY', 'CHEMICAL', 'RADIATION', 'CUSTOM_ALERT'
+      ];
     }
 
     function isValidTimestamp(ts) {
@@ -80,21 +86,22 @@ service cloud.firestore {
              data.regionName.size() <= 120 &&
              data.currentLevel is string &&
              isValidAlertLevel(data.currentLevel) &&
-             data.activeLevels is list &&
-             data.activeLevels.size() <= 5 &&
-             (data.activeLevels.size() == 0 || data.activeLevels[0] is string) &&
-             data.threatDetails is string &&
-             data.threatDetails.size() <= 500 &&
-             data.adminName is string &&
-             data.adminName.size() >= 1 &&
-             data.adminName.size() <= 80 &&
-             data.updatedByUid is string &&
-             data.updatedByUid.size() >= 1 &&
-             data.updatedByUid.size() <= 128 &&
-             data.isPublic == true &&
-             (!('alertStartTime' in data) || (data.alertStartTime is int && data.alertStartTime >= 0)) &&
-             isValidTimestamp(data.createdAt) &&
-             isValidTimestamp(data.updatedAt);
+              data.activeLevels is list &&
+              data.activeLevels.size() <= 10 &&
+              (data.activeLevels.size() == 0 || data.activeLevels[0] is string) &&
+              data.threatDetails is string &&
+              data.threatDetails.size() <= 500 &&
+              data.adminName is string &&
+              data.adminName.size() >= 1 &&
+              data.adminName.size() <= 80 &&
+              data.updatedByUid is string &&
+              data.updatedByUid.size() >= 1 &&
+              data.updatedByUid.size() <= 128 &&
+              data.isPublic == true &&
+              (!('withoutAllClear' in data) || data.withoutAllClear is bool) &&
+              (!('alertStartTime' in data) || (data.alertStartTime is int && data.alertStartTime >= 0)) &&
+              isValidTimestamp(data.createdAt) &&
+              isValidTimestamp(data.updatedAt);
     }
 
     function isValidAlertEvent(data) {
@@ -108,7 +115,7 @@ service cloud.firestore {
              isValidAlertLevel(data.level) &&
              data.activeLevels is list &&
              data.activeLevels.size() >= 1 &&
-             data.activeLevels.size() <= 5 &&
+             data.activeLevels.size() <= 10 &&
              data.activeLevels[0] is string &&
              data.threatDetails is string &&
              data.threatDetails.size() <= 500 &&
@@ -123,6 +130,7 @@ service cloud.firestore {
              data.authorUid.size() <= 128 &&
              data.isBroadcastBanner is bool &&
              data.isTotalAllClear is bool &&
+             (!('withoutAllClear' in data) || data.withoutAllClear is bool) &&
              data.isPublic == true &&
              data.clientTimestampMs is int &&
              data.clientTimestampMs >= 0 &&
@@ -208,7 +216,8 @@ service cloud.firestore {
                        incoming().keys().hasOnly([
                          'regionName', 'currentLevel', 'activeLevels',
                          'threatDetails', 'adminName', 'updatedByUid',
-                         'isPublic', 'alertStartTime', 'createdAt', 'updatedAt'
+                         'isPublic', 'withoutAllClear', 'alertStartTime',
+                         'createdAt', 'updatedAt'
                        ]);
 
       allow update: if isSignedIn() &&
@@ -221,7 +230,7 @@ service cloud.firestore {
                        incoming().diff(existing()).affectedKeys().hasOnly([
                          'regionName', 'currentLevel', 'activeLevels',
                          'threatDetails', 'adminName', 'updatedByUid',
-                         'alertStartTime', 'updatedAt'
+                         'withoutAllClear', 'alertStartTime', 'updatedAt'
                        ]);
 
       allow delete: if isSignedIn() && isValidId(regionId) && isAdmin();
@@ -246,8 +255,8 @@ service cloud.firestore {
                        incoming().keys().hasOnly([
                          'regionId', 'regionName', 'level', 'activeLevels',
                          'threatDetails', 'source', 'adminName', 'authorUid',
-                         'isBroadcastBanner', 'isTotalAllClear', 'isPublic',
-                         'clientTimestampMs', 'createdAt'
+                         'isBroadcastBanner', 'isTotalAllClear', 'withoutAllClear',
+                         'isPublic', 'clientTimestampMs', 'createdAt'
                        ]);
 
       allow update: if false;

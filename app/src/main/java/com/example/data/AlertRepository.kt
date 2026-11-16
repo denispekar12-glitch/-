@@ -14,7 +14,6 @@ import com.example.model.FirestoreUserProfile
 import com.example.model.RegionItem
 import com.example.model.SoundSettings
 import com.example.model.UserRole
-import com.example.network.OfficialOblastStatus
 import com.example.network.OnlineAlertSyncClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +31,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -53,12 +53,18 @@ class AlertRepository(
 
     companion object {
         const val KRYVE_OZERO_ID = "kryve_ozero"
+        const val MAX_PINNED_REGIONS = 3
+        const val MAX_PERSISTED_EVENTS = 300
+        const val MAX_PERSISTED_COMMENTS = 300
+
         const val PREF_PIN = "admin_pin"
         const val PREF_ROLE = "user_role"
+        const val PREF_ADMIN_LOCKED_BY_UID = "admin_locked_by_uid"
         const val PREF_MONITORED = "monitored_region_ids"
         const val PREF_REGIONS_STATE = "regions_full_state_json"
         const val PREF_EVENTS_LOG = "events_log_json"
         const val PREF_LATEST_BROADCAST = "latest_broadcast_json"
+        const val PREF_CUSTOM_AUDIO_PATHS = "custom_audio_paths_json"
         const val PREF_VOLUME = "sound_volume"
         const val PREF_VIBRATION = "sound_vibration"
         const val PREF_AUTO_VOICE = "sound_auto_voice"
@@ -75,9 +81,22 @@ class AlertRepository(
         const val DEFAULT_PIN = "1234"
         const val DEFAULT_ONLINE_CHANNEL = "omastrotryvoga-kryveozero-live-v1"
         const val ADMIN_OWNER_EMAIL = "denispekar12@gmail.com"
+        const val ADMIN_SECOND_EMAIL = "semenenkom342@gmail.com"
+        val ADMIN_EMAILS = setOf(ADMIN_OWNER_EMAIL, ADMIN_SECOND_EMAIL)
         const val ADMIN_OWNER_NAME = "Денис"
-        private const val ADMIN_OVERRIDE_GRACE_MS = 30 * 60 * 1000L
+
+        fun isAdminEmail(email: String?): Boolean {
+            if (email.isNullOrBlank()) return false
+            return ADMIN_EMAILS.any { it.equals(email.trim(), ignoreCase = true) }
+        }
     }
+
+    private val currentAdminName: String
+        get() = when {
+            authUserEmail.equals(ADMIN_OWNER_EMAIL, ignoreCase = true) -> ADMIN_OWNER_NAME
+            authDisplayName.isNotBlank() -> authDisplayName.trim()
+            else -> "Адміністратор"
+        }
 
     private val deviceId: String by lazy {
         val existing = prefs.getString(PREF_DEVICE_ID, null)
@@ -85,12 +104,11 @@ class AlertRepository(
             existing
         } else {
             val generated = UUID.randomUUID().toString()
-            prefs.edit().putString(PREF_DEVICE_ID, generated).apply()
+            prefs.edit().putString(PREF_DEVICE_ID, generated).commit()
             generated
         }
     }
 
-    // Tracks recent admin manual overrides so DSNS background sync doesn't immediately revert them
     private val manualOverrideTimestamps = ConcurrentHashMap<String, Long>()
     private val lastLocalAdminWriteMs = ConcurrentHashMap<String, Long>()
     private val processedRemoteIds = mutableSetOf<String>()
@@ -108,12 +126,18 @@ class AlertRepository(
     private val _comments = MutableStateFlow<List<DiscussionComment>>(emptyList())
     val comments: StateFlow<List<DiscussionComment>> = _comments.asStateFlow()
 
-    // Sole Administrator is Denis (denispekar12@gmail.com). Others are restricted users.
+    // Administrators: Denis (denispekar12@gmail.com) and 2nd Admin (semenenkom342@gmail.com). Others are restricted users.
     private val _userRole = MutableStateFlow(UserRole.ADMIN)
     val userRole: StateFlow<UserRole> = _userRole.asStateFlow()
 
     private val _soundSettings = MutableStateFlow(SoundSettings())
     val soundSettings: StateFlow<SoundSettings> = _soundSettings.asStateFlow()
+
+    private val _customAudioPaths = MutableStateFlow<Map<AlertLevel, String>>(emptyMap())
+    val customAudioPaths: StateFlow<Map<AlertLevel, String>> = _customAudioPaths.asStateFlow()
+
+    private val _pinnedLimitMessage = MutableStateFlow<String?>(null)
+    val pinnedLimitMessage: StateFlow<String?> = _pinnedLimitMessage.asStateFlow()
 
     private val _isApiConnected = MutableStateFlow(syncClient.isNetworkAvailable())
     val isApiConnected: StateFlow<Boolean> = _isApiConnected.asStateFlow()
@@ -144,16 +168,15 @@ class AlertRepository(
     private val _savedSelectedRegionId = MutableStateFlow(KRYVE_OZERO_ID)
     val savedSelectedRegionId: StateFlow<String> = _savedSelectedRegionId.asStateFlow()
 
-    // Real-time broadcast pushed when administrator taps an action
     private val _latestAdminBroadcast = MutableStateFlow<AdminBroadcast?>(null)
     val latestAdminBroadcast: StateFlow<AdminBroadcast?> = _latestAdminBroadcast.asStateFlow()
 
-    // Triggered whenever an alert changes for active audio/notification handling
     private val _alertStateChanges = MutableSharedFlow<AlertChangeEvent>(extraBufferCapacity = 10)
     val alertStateChanges: SharedFlow<AlertChangeEvent> = _alertStateChanges.asSharedFlow()
 
     init {
         loadSettings()
+        loadCustomAudioPaths()
         initInitialRegions()
         loadPersistedEvents()
         loadPersistedBroadcast()
@@ -173,10 +196,11 @@ class AlertRepository(
     private fun loadSettings() {
         _userRole.value = if (firestoreSync != null && authUserId != null) {
             if (isVerifiedGoogleAdmin) {
-                val roleStr = prefs.getString(PREF_ROLE, UserRole.ADMIN.name) ?: UserRole.ADMIN.name
-                try {
-                    UserRole.valueOf(roleStr)
-                } catch (_: Exception) {
+                val lockedByUid = prefs.getString(PREF_ADMIN_LOCKED_BY_UID, null)
+                if (lockedByUid == authUserId) {
+                    UserRole.USER
+                } else {
+                    prefs.edit().putString(PREF_ROLE, UserRole.ADMIN.name).commit()
                     UserRole.ADMIN
                 }
             } else {
@@ -198,7 +222,7 @@ class AlertRepository(
         _soundSettings.value = SoundSettings(
             volume = vol,
             vibrationEnabled = vib,
-            playOnceOnly = true, // Play once cleanly without looping or repeating
+            playOnceOnly = true,
             autoPlayVoice = autoVoice
         )
 
@@ -215,280 +239,423 @@ class AlertRepository(
         }
     }
 
+    private fun loadCustomAudioPaths() {
+        val raw = prefs.getString(PREF_CUSTOM_AUDIO_PATHS, null) ?: return
+        try {
+            val obj = JSONObject(raw)
+            val map = mutableMapOf<AlertLevel, String>()
+            AlertLevel.entries.forEach { level ->
+                val path = obj.optString(level.name, "")
+                if (path.isNotBlank() && File(path).exists()) {
+                    map[level] = path
+                }
+            }
+            _customAudioPaths.value = map
+        } catch (_: Exception) {}
+    }
+
+    private fun saveCustomAudioPaths(map: Map<AlertLevel, String>) {
+        try {
+            val obj = JSONObject()
+            map.forEach { (level, path) ->
+                if (path.isNotBlank()) obj.put(level.name, path)
+            }
+            prefs.edit().putString(PREF_CUSTOM_AUDIO_PATHS, obj.toString()).commit()
+        } catch (_: Exception) {}
+    }
+
+    fun setCustomAudioPath(level: AlertLevel, filePath: String) {
+        _customAudioPaths.update { current ->
+            val updated = current + (level to filePath)
+            saveCustomAudioPaths(updated)
+            updated
+        }
+    }
+
+    fun clearCustomAudioPath(level: AlertLevel) {
+        val oldPath = _customAudioPaths.value[level]
+        if (!oldPath.isNullOrBlank()) {
+            try {
+                File(oldPath).delete()
+            } catch (_: Exception) {}
+        }
+        _customAudioPaths.update { current ->
+            val updated = current - level
+            saveCustomAudioPaths(updated)
+            updated
+        }
+    }
+
     private fun initInitialRegions() {
-        val monitoredIds = prefs.getStringSet(
+        val rawMonitored = prefs.getStringSet(
             PREF_MONITORED,
-            setOf(KRYVE_OZERO_ID, "mykolaiv", "kyiv_city")
+            setOf(KRYVE_OZERO_ID, "mykolaiv")
         ) ?: setOf(KRYVE_OZERO_ID, "mykolaiv")
+
+        // Enforce maximum 3 pinned districts cleanly while prioritizing Kryve Ozero
+        val clampedMonitored = rawMonitored
+            .sortedBy { if (it == KRYVE_OZERO_ID) 0 else 1 }
+            .take(MAX_PINNED_REGIONS)
+            .toSet()
 
         val initial = listOf(
             RegionItem(
                 id = KRYVE_OZERO_ID,
                 name = "Кривоозерська громада (Криве Озеро)",
-                oblast = "Миколаївська область",
+                oblast = "Первомайський район • Миколаївщина",
                 isHromada = true,
-                isMonitored = monitoredIds.contains(KRYVE_OZERO_ID),
+                isMonitored = clampedMonitored.contains(KRYVE_OZERO_ID),
                 currentLevel = AlertLevel.SAFE,
                 threatDetails = "Рідна громада • Тривоги вмикає лише адміністратор Денис",
                 mapNormX = 0.47f,
                 mapNormY = 0.65f
             ),
             RegionItem(
-                id = "mykolaiv",
-                name = "Миколаївська область",
+                id = "pervomaisk_raion",
+                name = "Первомайський район",
                 oblast = "Миколаївська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("mykolaiv"),
+                isMonitored = clampedMonitored.contains("pervomaisk_raion"),
+                currentLevel = AlertLevel.SAFE,
+                mapNormX = 0.49f,
+                mapNormY = 0.66f
+            ),
+            RegionItem(
+                id = "mykolaiv",
+                name = "Миколаївський район",
+                oblast = "Миколаївська область",
+                isHromada = false,
+                isMonitored = clampedMonitored.contains("mykolaiv"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.52f,
+                mapNormY = 0.72f
+            ),
+            RegionItem(
+                id = "voznesensk_raion",
+                name = "Вознесенський район",
+                oblast = "Миколаївська область",
+                isHromada = false,
+                isMonitored = clampedMonitored.contains("voznesensk_raion"),
+                currentLevel = AlertLevel.SAFE,
+                mapNormX = 0.51f,
+                mapNormY = 0.68f
+            ),
+            RegionItem(
+                id = "bashtanka_raion",
+                name = "Баштанський район",
+                oblast = "Миколаївська область",
+                isHromada = false,
+                isMonitored = clampedMonitored.contains("bashtanka_raion"),
+                currentLevel = AlertLevel.SAFE,
+                mapNormX = 0.55f,
                 mapNormY = 0.70f
             ),
             RegionItem(
                 id = "kyiv_city",
-                name = "м. Київ",
-                oblast = "м. Київ",
+                name = "Київський район / м. Київ",
+                oblast = "Київ та область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("kyiv_city"),
+                isMonitored = clampedMonitored.contains("kyiv_city"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.48f,
                 mapNormY = 0.35f
             ),
             RegionItem(
-                id = "kyiv_obl",
-                name = "Київська область",
+                id = "bila_tserkva_raion",
+                name = "Білоцерківський район",
                 oblast = "Київська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("kyiv_obl"),
+                isMonitored = clampedMonitored.contains("bila_tserkva_raion"),
                 currentLevel = AlertLevel.SAFE,
-                mapNormX = 0.48f,
+                mapNormX = 0.47f,
+                mapNormY = 0.39f
+            ),
+            RegionItem(
+                id = "kyiv_obl",
+                name = "Бучанський район",
+                oblast = "Київська область",
+                isHromada = false,
+                isMonitored = clampedMonitored.contains("kyiv_obl"),
+                currentLevel = AlertLevel.SAFE,
+                mapNormX = 0.46f,
                 mapNormY = 0.31f
             ),
             RegionItem(
                 id = "odesa",
-                name = "Одеська область",
+                name = "Одеський район",
                 oblast = "Одеська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("odesa"),
+                isMonitored = clampedMonitored.contains("odesa"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.40f,
                 mapNormY = 0.75f
             ),
             RegionItem(
+                id = "podilsk_raion",
+                name = "Подільський район",
+                oblast = "Одеська область",
+                isHromada = false,
+                isMonitored = clampedMonitored.contains("podilsk_raion"),
+                currentLevel = AlertLevel.SAFE,
+                mapNormX = 0.42f,
+                mapNormY = 0.67f
+            ),
+            RegionItem(
+                id = "izmail_raion",
+                name = "Ізмаїльський район",
+                oblast = "Одеська область",
+                isHromada = false,
+                isMonitored = clampedMonitored.contains("izmail_raion"),
+                currentLevel = AlertLevel.SAFE,
+                mapNormX = 0.36f,
+                mapNormY = 0.80f
+            ),
+            RegionItem(
                 id = "kharkiv",
-                name = "Харківська область",
+                name = "Харківський район",
                 oblast = "Харківська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("kharkiv"),
+                isMonitored = clampedMonitored.contains("kharkiv"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.75f,
                 mapNormY = 0.38f
             ),
             RegionItem(
+                id = "chuhuiv_raion",
+                name = "Чугуївський район",
+                oblast = "Харківська область",
+                isHromada = false,
+                isMonitored = clampedMonitored.contains("chuhuiv_raion"),
+                currentLevel = AlertLevel.SAFE,
+                mapNormX = 0.78f,
+                mapNormY = 0.40f
+            ),
+            RegionItem(
                 id = "dnipro",
-                name = "Дніпропетровська область",
+                name = "Дніпровський район",
                 oblast = "Дніпропетровська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("dnipro"),
+                isMonitored = clampedMonitored.contains("dnipro"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.64f,
                 mapNormY = 0.55f
             ),
             RegionItem(
+                id = "kryvyi_rih_raion",
+                name = "Криворізький район",
+                oblast = "Дніпропетровська область",
+                isHromada = false,
+                isMonitored = clampedMonitored.contains("kryvyi_rih_raion"),
+                currentLevel = AlertLevel.SAFE,
+                mapNormX = 0.59f,
+                mapNormY = 0.60f
+            ),
+            RegionItem(
                 id = "zaporizhzhia",
-                name = "Запорізька область",
+                name = "Запорізький район",
                 oblast = "Запорізька область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("zaporizhzhia"),
+                isMonitored = clampedMonitored.contains("zaporizhzhia"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.68f,
                 mapNormY = 0.68f
             ),
             RegionItem(
                 id = "kherson",
-                name = "Херсонська область",
+                name = "Херсонський район",
                 oblast = "Херсонська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("kherson"),
+                isMonitored = clampedMonitored.contains("kherson"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.58f,
                 mapNormY = 0.78f
             ),
             RegionItem(
                 id = "vinnytsia",
-                name = "Вінницька область",
+                name = "Вінницький район",
                 oblast = "Вінницька область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("vinnytsia"),
+                isMonitored = clampedMonitored.contains("vinnytsia"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.38f,
                 mapNormY = 0.50f
             ),
             RegionItem(
                 id = "cherkasy",
-                name = "Черкаська область",
+                name = "Черкаський район",
                 oblast = "Черкаська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("cherkasy"),
+                isMonitored = clampedMonitored.contains("cherkasy"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.50f,
                 mapNormY = 0.46f
             ),
             RegionItem(
+                id = "uman_raion",
+                name = "Уманський район",
+                oblast = "Черкаська область",
+                isHromada = false,
+                isMonitored = clampedMonitored.contains("uman_raion"),
+                currentLevel = AlertLevel.SAFE,
+                mapNormX = 0.46f,
+                mapNormY = 0.55f
+            ),
+            RegionItem(
                 id = "poltava",
-                name = "Полтавська область",
+                name = "Полтавський район",
                 oblast = "Полтавська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("poltava"),
+                isMonitored = clampedMonitored.contains("poltava"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.62f,
                 mapNormY = 0.42f
             ),
             RegionItem(
                 id = "sumy",
-                name = "Сумська область",
+                name = "Сумський район",
                 oblast = "Сумська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("sumy"),
+                isMonitored = clampedMonitored.contains("sumy"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.66f,
                 mapNormY = 0.26f
             ),
             RegionItem(
                 id = "chernihiv",
-                name = "Чернігівська область",
+                name = "Чернігівський район",
                 oblast = "Чернігівська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("chernihiv"),
+                isMonitored = clampedMonitored.contains("chernihiv"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.52f,
                 mapNormY = 0.22f
             ),
             RegionItem(
                 id = "zhytomyr",
-                name = "Житомирська область",
+                name = "Житомирський район",
                 oblast = "Житомирська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("zhytomyr"),
+                isMonitored = clampedMonitored.contains("zhytomyr"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.38f,
                 mapNormY = 0.34f
             ),
             RegionItem(
                 id = "rivne",
-                name = "Рівненська область",
+                name = "Рівненський район",
                 oblast = "Рівненська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("rivne"),
+                isMonitored = clampedMonitored.contains("rivne"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.28f,
                 mapNormY = 0.30f
             ),
             RegionItem(
                 id = "volyn",
-                name = "Волинська область",
+                name = "Луцький район",
                 oblast = "Волинська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("volyn"),
+                isMonitored = clampedMonitored.contains("volyn"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.18f,
                 mapNormY = 0.28f
             ),
             RegionItem(
                 id = "lviv",
-                name = "Львівська область",
+                name = "Львівський район",
                 oblast = "Львівська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("lviv"),
+                isMonitored = clampedMonitored.contains("lviv"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.16f,
                 mapNormY = 0.42f
             ),
             RegionItem(
                 id = "khmelnytskyi",
-                name = "Хмельницька область",
+                name = "Хмельницький район",
                 oblast = "Хмельницька область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("khmelnytskyi"),
+                isMonitored = clampedMonitored.contains("khmelnytskyi"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.30f,
                 mapNormY = 0.46f
             ),
             RegionItem(
                 id = "ternopil",
-                name = "Тернопільська область",
+                name = "Тернопільський район",
                 oblast = "Тернопільська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("ternopil"),
+                isMonitored = clampedMonitored.contains("ternopil"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.24f,
                 mapNormY = 0.48f
             ),
             RegionItem(
                 id = "ivano_frankivsk",
-                name = "Івано-Франківська область",
+                name = "Івано-Франківський район",
                 oblast = "Івано-Франківська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("ivano_frankivsk"),
+                isMonitored = clampedMonitored.contains("ivano_frankivsk"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.19f,
                 mapNormY = 0.56f
             ),
             RegionItem(
                 id = "zakarpattia",
-                name = "Закарпатська область",
+                name = "Ужгородський район",
                 oblast = "Закарпатська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("zakarpattia"),
+                isMonitored = clampedMonitored.contains("zakarpattia"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.12f,
                 mapNormY = 0.58f
             ),
             RegionItem(
                 id = "chernivtsi",
-                name = "Чернівецька область",
+                name = "Чернівецький район",
                 oblast = "Чернівецька область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("chernivtsi"),
+                isMonitored = clampedMonitored.contains("chernivtsi"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.28f,
                 mapNormY = 0.58f
             ),
             RegionItem(
                 id = "kirovohrad",
-                name = "Кіровоградська область",
+                name = "Кропивницький район",
                 oblast = "Кіровоградська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("kirovohrad"),
+                isMonitored = clampedMonitored.contains("kirovohrad"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.54f,
                 mapNormY = 0.54f
             ),
             RegionItem(
                 id = "donetsk",
-                name = "Донецька область",
+                name = "Краматорський район",
                 oblast = "Донецька область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("donetsk"),
+                isMonitored = clampedMonitored.contains("donetsk"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.82f,
                 mapNormY = 0.58f
             ),
             RegionItem(
                 id = "luhansk",
-                name = "Луганська область",
+                name = "Сєвєродонецький район",
                 oblast = "Луганська область",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("luhansk"),
+                isMonitored = clampedMonitored.contains("luhansk"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.90f,
                 mapNormY = 0.44f
             ),
             RegionItem(
                 id = "crimea",
-                name = "АР Крим",
+                name = "Сімферопольський район (Крим)",
                 oblast = "АР Крим",
                 isHromada = false,
-                isMonitored = monitoredIds.contains("crimea"),
+                isMonitored = clampedMonitored.contains("crimea"),
                 currentLevel = AlertLevel.SAFE,
                 mapNormX = 0.62f,
                 mapNormY = 0.92f
@@ -497,12 +664,15 @@ class AlertRepository(
 
         val savedStates = loadPersistedRegionsState()
         val isManualMigrated = prefs.getBoolean(PREF_MANUAL_ONLY_MIGRATED, false)
+        var monitoredAssignedCount = 0
+
         _regions.value = initial.map { base ->
             val saved = savedStates[base.id]
             if (saved != null) {
-                // Clear any old pre-populated/DSNS auto-alerts on first launch of manual-only mode
                 if (!isManualMigrated && saved.manualOverrideAt == 0L) {
-                    base.copy(isMonitored = saved.isMonitored)
+                    val allowMonitor = saved.isMonitored && monitoredAssignedCount < MAX_PINNED_REGIONS
+                    if (allowMonitor) monitoredAssignedCount++
+                    base.copy(isMonitored = allowMonitor)
                 } else {
                     if (saved.manualOverrideAt > 0L) {
                         manualOverrideTimestamps[base.id] = saved.manualOverrideAt
@@ -511,20 +681,28 @@ class AlertRepository(
                         if (saved.level.isDanger) setOf(saved.level) else emptySet()
                     }
                     val primary = AlertLevel.primaryOf(restoredSet)
+                    val allowMonitor = saved.isMonitored && monitoredAssignedCount < MAX_PINNED_REGIONS
+                    if (allowMonitor) monitoredAssignedCount++
                     base.copy(
-                        isMonitored = saved.isMonitored,
+                        isMonitored = allowMonitor,
                         currentLevel = primary,
                         activeAlerts = restoredSet,
                         alertStartTime = saved.alertStartTime,
-                        threatDetails = saved.threatDetails.ifBlank { base.threatDetails }
+                        threatDetails = saved.threatDetails.ifBlank { base.threatDetails },
+                        withoutAllClear = saved.withoutAllClear
                     )
                 }
             } else {
-                base
+                if (base.isMonitored && monitoredAssignedCount < MAX_PINNED_REGIONS) {
+                    monitoredAssignedCount++
+                    base
+                } else {
+                    base.copy(isMonitored = false)
+                }
             }
         }
         if (!isManualMigrated) {
-            prefs.edit().putBoolean(PREF_MANUAL_ONLY_MIGRATED, true).apply()
+            prefs.edit().putBoolean(PREF_MANUAL_ONLY_MIGRATED, true).commit()
             if (savedStates.isNotEmpty()) {
                 saveRegionsState()
             }
@@ -537,7 +715,8 @@ class AlertRepository(
         val activeAlerts: Set<AlertLevel>,
         val alertStartTime: Long?,
         val threatDetails: String,
-        val manualOverrideAt: Long
+        val manualOverrideAt: Long,
+        val withoutAllClear: Boolean
     )
 
     private fun loadPersistedRegionsState(): Map<String, SavedRegionState> {
@@ -570,7 +749,8 @@ class AlertRepository(
                     },
                     alertStartTime = startTime,
                     threatDetails = obj.optString("threatDetails", ""),
-                    manualOverrideAt = obj.optLong("manualOverrideAt", 0L)
+                    manualOverrideAt = obj.optLong("manualOverrideAt", 0L),
+                    withoutAllClear = obj.optBoolean("withoutAllClear", false)
                 )
             }
             map
@@ -614,13 +794,15 @@ class AlertRepository(
                     }
                     put("threatDetails", region.threatDetails)
                     put("manualOverrideAt", manualOverrideTimestamps[region.id] ?: 0L)
+                    put("withoutAllClear", region.withoutAllClear)
                 }
                 array.put(obj)
             }
+            // Synchronous commit guarantees zero data loss across overnight restarts / process death
             prefs.edit()
                 .putStringSet(PREF_MONITORED, monitoredIds)
                 .putString(PREF_REGIONS_STATE, array.toString())
-                .apply()
+                .commit()
         } catch (_: Exception) {}
     }
 
@@ -647,7 +829,8 @@ class AlertRepository(
                             activeLevels = parsedActive,
                             timestamp = obj.optLong("timestamp", System.currentTimeMillis()),
                             threatDetails = obj.optString("threatDetails", ""),
-                            source = obj.optString("source", "ДСНС / Адміністратор")
+                            source = obj.optString("source", "Адміністратор Денис"),
+                            withoutAllClear = obj.optBoolean("withoutAllClear", false)
                         )
                     )
                 }
@@ -676,7 +859,7 @@ class AlertRepository(
     private fun saveEvents(list: List<AlertEventLog>) {
         try {
             val array = JSONArray()
-            list.take(50).forEach { event ->
+            list.take(MAX_PERSISTED_EVENTS).forEach { event ->
                 val activeArray = JSONArray().apply {
                     event.activeLevels.forEach { put(it.name) }
                 }
@@ -688,10 +871,11 @@ class AlertRepository(
                     put("timestamp", event.timestamp)
                     put("threatDetails", event.threatDetails)
                     put("source", event.source)
+                    put("withoutAllClear", event.withoutAllClear)
                 }
                 array.put(obj)
             }
-            prefs.edit().putString(PREF_EVENTS_LOG, array.toString()).apply()
+            prefs.edit().putString(PREF_EVENTS_LOG, array.toString()).commit()
         } catch (_: Exception) {}
     }
 
@@ -717,7 +901,8 @@ class AlertRepository(
                 activeLevels = parsedActive,
                 timestamp = obj.optLong("timestamp", System.currentTimeMillis()),
                 note = obj.optString("note", ""),
-                adminName = obj.optString("adminName", ADMIN_OWNER_NAME)
+                adminName = obj.optString("adminName", ADMIN_OWNER_NAME),
+                withoutAllClear = obj.optBoolean("withoutAllClear", false)
             )
         } catch (_: Exception) {
             _latestAdminBroadcast.value = null
@@ -726,7 +911,7 @@ class AlertRepository(
 
     private fun saveLatestBroadcast(broadcast: AdminBroadcast?) {
         if (broadcast == null) {
-            prefs.edit().remove(PREF_LATEST_BROADCAST).apply()
+            prefs.edit().remove(PREF_LATEST_BROADCAST).commit()
             return
         }
         try {
@@ -741,22 +926,49 @@ class AlertRepository(
                 put("timestamp", broadcast.timestamp)
                 put("note", broadcast.note)
                 put("adminName", broadcast.adminName)
+                put("withoutAllClear", broadcast.withoutAllClear)
             }
-            prefs.edit().putString(PREF_LATEST_BROADCAST, obj.toString()).apply()
+            prefs.edit().putString(PREF_LATEST_BROADCAST, obj.toString()).commit()
         } catch (_: Exception) {}
     }
 
+    fun dismissPinnedLimitMessage() {
+        _pinnedLimitMessage.value = null
+    }
+
     fun addOrPrioritizeKryveOzero() {
+        val currentlyPinned = _regions.value.filter { it.isMonitored }.map { it.id }
+        if (currentlyPinned.contains(KRYVE_OZERO_ID)) return
+        val nextPinned = if (currentlyPinned.size >= MAX_PINNED_REGIONS) {
+            (listOf(KRYVE_OZERO_ID) + currentlyPinned.take(MAX_PINNED_REGIONS - 1)).toSet()
+        } else {
+            (currentlyPinned + KRYVE_OZERO_ID).toSet()
+        }
+        setPinnedRegions(nextPinned)
+    }
+
+    fun setPinnedRegions(regionIds: Set<String>) {
+        val limited = regionIds.take(MAX_PINNED_REGIONS).toSet()
+        _pinnedLimitMessage.value = null
         _regions.update { current ->
-            current.map {
-                if (it.id == KRYVE_OZERO_ID) it.copy(isMonitored = true) else it
-            }
+            current.map { it.copy(isMonitored = limited.contains(it.id)) }
         }
         saveRegionsState()
         syncUserProfileToFirestore()
     }
 
-    fun toggleRegionMonitored(regionId: String) {
+    /**
+     * Toggles whether a district is pinned (up to MAX_PINNED_REGIONS = 3).
+     * Returns true if updated, or false if the 3-district cap is already reached.
+     */
+    fun toggleRegionMonitored(regionId: String): Boolean {
+        val target = _regions.value.find { it.id == regionId } ?: return false
+        val currentlyPinnedCount = _regions.value.count { it.isMonitored }
+        if (!target.isMonitored && currentlyPinnedCount >= MAX_PINNED_REGIONS) {
+            _pinnedLimitMessage.value = "Максимум $MAX_PINNED_REGIONS райони! Вимкніть один з обраних, щоб додати інший."
+            return false
+        }
+        _pinnedLimitMessage.value = null
         _regions.update { current ->
             current.map {
                 if (it.id == regionId) it.copy(isMonitored = !it.isMonitored) else it
@@ -764,20 +976,64 @@ class AlertRepository(
         }
         saveRegionsState()
         syncUserProfileToFirestore()
+        return true
     }
 
-    // Admin mutation: single alert level (replaces active set or clears to SAFE)
-    fun setRegionAlertLevel(regionId: String, newLevel: AlertLevel, threatNote: String = "") {
-        val targetLevels = if (newLevel.isDanger) setOf(newLevel) else emptySet()
-        setRegionActiveAlerts(regionId, targetLevels, threatNote)
+    // Admin mutation: single alert level (or clear to SAFE with/without all-clear)
+    fun setRegionAlertLevel(
+        regionId: String,
+        newLevel: AlertLevel,
+        threatNote: String = "",
+        withoutAllClear: Boolean = false
+    ) {
+        if (!newLevel.isDanger) {
+            val emitAudio = !withoutAllClear
+            setRegionActiveAlerts(
+                regionId = regionId,
+                levels = emptySet(),
+                threatNote = threatNote.ifBlank {
+                    if (withoutAllClear) "Тривогу знято (без відбою)." else "Відбій загрози. Спокійно."
+                },
+                audioOverride = if (emitAudio) listOf(AlertLevel.SAFE) else emptyList(),
+                withoutAllClear = withoutAllClear,
+                emitAudio = emitAudio
+            )
+            return
+        }
+        setRegionActiveAlerts(
+            regionId = regionId,
+            levels = setOf(newLevel),
+            threatNote = threatNote,
+            withoutAllClear = withoutAllClear,
+            emitAudio = true
+        )
     }
 
-    // Admin mutation: set MULTIPLE simultaneous alerts on one region (e.g. Street Fights + Civil Defense)
+    fun clearRegionAlerts(regionId: String, withAllClearSound: Boolean) {
+        val note = if (withAllClearSound) {
+            "Відбій тривоги! Небезпека минула."
+        } else {
+            "Тривогу знято (без відбою)."
+        }
+        setRegionActiveAlerts(
+            regionId = regionId,
+            levels = emptySet(),
+            threatNote = note,
+            audioOverride = if (withAllClearSound) listOf(AlertLevel.SAFE) else emptyList(),
+            withoutAllClear = !withAllClearSound,
+            emitAudio = withAllClearSound
+        )
+    }
+
+    // Admin mutation: set MULTIPLE simultaneous alerts on one district
     fun setRegionActiveAlerts(
         regionId: String,
         levels: Set<AlertLevel>,
         threatNote: String = "",
-        audioOverride: List<AlertLevel>? = null
+        audioOverride: List<AlertLevel>? = null,
+        explicitRawResIds: List<Int> = emptyList(),
+        withoutAllClear: Boolean = false,
+        emitAudio: Boolean = true
     ) {
         if (firestoreSync != null && authUserId != null && (!isVerifiedGoogleAdmin || _userRole.value != UserRole.ADMIN)) {
             return
@@ -793,8 +1049,10 @@ class AlertRepository(
             source = "Адміністратор $ADMIN_OWNER_NAME",
             timestamp = now,
             emitBroadcastBanner = true,
-            emitAudioAndNotification = true,
-            audioOverride = audioOverride
+            emitAudioAndNotification = emitAudio,
+            audioOverride = audioOverride,
+            explicitRawResIds = explicitRawResIds,
+            withoutAllClear = withoutAllClear
         )
 
         updatedItem?.let { reg ->
@@ -812,7 +1070,8 @@ class AlertRepository(
                         activeLevels = activeLevelNames,
                         threatDetails = reg.threatDetails,
                         adminName = ADMIN_OWNER_NAME,
-                        alertStartTime = reg.alertStartTime
+                        alertStartTime = reg.alertStartTime,
+                        withoutAllClear = withoutAllClear
                     )
                     firestoreSync.publishAlertEvent(
                         eventId = eventId,
@@ -825,6 +1084,7 @@ class AlertRepository(
                         adminName = ADMIN_OWNER_NAME,
                         isBroadcastBanner = true,
                         isTotalAllClear = false,
+                        withoutAllClear = withoutAllClear,
                         clientTimestampMs = now
                     )
                 }
@@ -842,6 +1102,8 @@ class AlertRepository(
                 put("activeLevels", activeNames)
                 put("note", reg.threatDetails)
                 put("adminName", ADMIN_OWNER_NAME)
+                put("withoutAllClear", withoutAllClear)
+                put("emitAudio", emitAudio)
                 put("timestamp", now)
             }
             val titleText = if (reg.hasMultipleAlerts) {
@@ -857,10 +1119,15 @@ class AlertRepository(
         }
     }
 
-    // Toggle a single alert type ON or OFF in a region while preserving all other active alerts
-    fun toggleAlertTypeForRegion(regionId: String, level: AlertLevel, threatNote: String = "") {
+    // Toggle a single alert type ON or OFF in a district while preserving all other active alerts
+    fun toggleAlertTypeForRegion(
+        regionId: String,
+        level: AlertLevel,
+        threatNote: String = "",
+        withoutAllClear: Boolean = false
+    ) {
         if (!level.isDanger) {
-            setRegionActiveAlerts(regionId, emptySet(), threatNote)
+            clearRegionAlerts(regionId, withAllClearSound = !withoutAllClear)
             return
         }
         val currentRegion = _regions.value.find { it.id == regionId } ?: return
@@ -873,30 +1140,65 @@ class AlertRepository(
             existing.add(level)
             wasAdded = true
         }
+        val effectiveNoClear = if (wasAdded) (currentRegion.withoutAllClear || withoutAllClear) else withoutAllClear
+        val hasDedicatedClearVoice = level == AlertLevel.ARTILLERY ||
+            level == AlertLevel.CHEMICAL ||
+            level == AlertLevel.RADIATION ||
+            level == AlertLevel.CIVIL_DEFENSE
+        val emitAudio = when {
+            wasAdded -> true
+            !effectiveNoClear && (existing.isEmpty() || hasDedicatedClearVoice) -> true
+            else -> false
+        }
         val audioList = when {
             wasAdded -> listOf(level)
-            existing.isEmpty() -> listOf(AlertLevel.SAFE)
+            emitAudio -> listOf(AlertLevel.SAFE)
             else -> emptyList()
         }
-        setRegionActiveAlerts(regionId, existing, threatNote, audioOverride = audioList)
+        val explicitRaw = when {
+            !wasAdded && emitAudio && hasDedicatedClearVoice -> listOf(level.clearSoundResId)
+            else -> emptyList()
+        }
+        val effectiveNote = if (!wasAdded && threatNote.isBlank() && hasDedicatedClearVoice && !effectiveNoClear) {
+            if (existing.isEmpty()) {
+                "${level.allClearTitle}! Загроза минула."
+            } else {
+                "${level.allClearTitle}. Залишаються активними: " + existing.sortedByDescending { it.priorityOrder }.joinToString(", ") { it.shortName }
+            }
+        } else {
+            threatNote
+        }
+        setRegionActiveAlerts(
+            regionId = regionId,
+            levels = existing,
+            threatNote = effectiveNote,
+            audioOverride = audioList,
+            explicitRawResIds = explicitRaw,
+            withoutAllClear = effectiveNoClear,
+            emitAudio = emitAudio
+        )
     }
 
-    // Apply multiple alert levels across multiple regions at once
+    // Apply multiple alert levels across multiple districts at once
     fun setMultipleRegionsActiveAlerts(
         regionIds: List<String>,
         levels: Set<AlertLevel>,
-        threatNote: String = ""
+        threatNote: String = "",
+        withoutAllClear: Boolean = false,
+        emitAudio: Boolean = true
     ) {
         if (firestoreSync != null && authUserId != null && (!isVerifiedGoogleAdmin || _userRole.value != UserRole.ADMIN)) {
             return
         }
         val uniqueIds = regionIds.distinct().filter { id -> _regions.value.any { it.id == id } }
         if (uniqueIds.isEmpty()) return
+        val dangerSet = levels.filter { it.isDanger }.toSet()
+        val shouldPlayAudio = if (dangerSet.isEmpty()) !withoutAllClear && emitAudio else emitAudio
+
         uniqueIds.forEachIndexed { index, id ->
             val now = System.currentTimeMillis()
             manualOverrideTimestamps[id] = now
             lastLocalAdminWriteMs[id] = now
-            val dangerSet = levels.filter { it.isDanger }.toSet()
             val updatedItem = applyRegionMultiAlertMutation(
                 regionId = id,
                 activeDangerLevels = dangerSet,
@@ -904,8 +1206,9 @@ class AlertRepository(
                 source = "Адміністратор $ADMIN_OWNER_NAME",
                 timestamp = now,
                 emitBroadcastBanner = (index == uniqueIds.lastIndex),
-                // Play audio only once for the batch instead of repeating per region
-                emitAudioAndNotification = (index == 0)
+                emitAudioAndNotification = shouldPlayAudio && (index == 0),
+                audioOverride = if (dangerSet.isEmpty() && !shouldPlayAudio) emptyList() else null,
+                withoutAllClear = withoutAllClear
             )
             updatedItem?.let { reg ->
                 val eventId = UUID.randomUUID().toString()
@@ -922,7 +1225,8 @@ class AlertRepository(
                             activeLevels = activeLevelNames,
                             threatDetails = reg.threatDetails,
                             adminName = ADMIN_OWNER_NAME,
-                            alertStartTime = reg.alertStartTime
+                            alertStartTime = reg.alertStartTime,
+                            withoutAllClear = withoutAllClear
                         )
                         firestoreSync.publishAlertEvent(
                             eventId = eventId,
@@ -935,6 +1239,7 @@ class AlertRepository(
                             adminName = ADMIN_OWNER_NAME,
                             isBroadcastBanner = (index == uniqueIds.lastIndex),
                             isTotalAllClear = false,
+                            withoutAllClear = withoutAllClear,
                             clientTimestampMs = now
                         )
                     }
@@ -952,6 +1257,8 @@ class AlertRepository(
                     put("activeLevels", activeNames)
                     put("note", reg.threatDetails)
                     put("adminName", ADMIN_OWNER_NAME)
+                    put("withoutAllClear", withoutAllClear)
+                    put("emitAudio", shouldPlayAudio)
                     put("timestamp", now)
                 }
                 publishEnvelopeOnline(
@@ -971,7 +1278,9 @@ class AlertRepository(
         timestamp: Long,
         emitBroadcastBanner: Boolean,
         emitAudioAndNotification: Boolean,
-        audioOverride: List<AlertLevel>? = null
+        audioOverride: List<AlertLevel>? = null,
+        explicitRawResIds: List<Int> = emptyList(),
+        withoutAllClear: Boolean = false
     ): RegionItem? {
         val cleanDangerSet = activeDangerLevels.filter { it.isDanger }.toSet()
         val orderedActive = cleanDangerSet.sortedByDescending { it.priorityOrder }
@@ -990,18 +1299,15 @@ class AlertRepository(
                     } else {
                         item.alertStartTime ?: timestamp
                     }
+                    val noClearLabel = if (withoutAllClear) " (Без відбою)" else ""
                     val resolvedNote = threatNote.ifBlank {
                         when {
                             orderedActive.size > 1 ->
-                                "Одночасно: " + orderedActive.joinToString(" + ") { it.shortName }
-                            newPrimaryLevel == AlertLevel.RED ->
-                                "Повітряна тривога! Перейдіть в укриття!"
-                            newPrimaryLevel == AlertLevel.YELLOW ->
-                                "Жовтий рівень небезпеки. Підвищена увага."
-                            newPrimaryLevel == AlertLevel.STREET_FIGHTS ->
-                                "Вуличні бої! Залишайтесь в укритті!"
-                            newPrimaryLevel == AlertLevel.CIVIL_DEFENSE ->
-                                "Важливе сповіщення цивільного захисту! Ознайомтеся з додатком Омастротривога."
+                                "Одночасно$noClearLabel: " + orderedActive.joinToString(" + ") { it.shortName }
+                            newPrimaryLevel.isDanger ->
+                                newPrimaryLevel.defaultThreatNote() + noClearLabel
+                            withoutAllClear ->
+                                "Тривогу знято (без відбою)."
                             else -> "Відбій загрози. Спокійно."
                         }
                     }
@@ -1009,7 +1315,8 @@ class AlertRepository(
                         currentLevel = newPrimaryLevel,
                         activeAlerts = cleanDangerSet,
                         alertStartTime = startTime,
-                        threatDetails = resolvedNote
+                        threatDetails = resolvedNote,
+                        withoutAllClear = withoutAllClear
                     )
                     updatedItem = updated
                     updated
@@ -1032,7 +1339,8 @@ class AlertRepository(
                     activeLevels = levelsForDisplay,
                     timestamp = timestamp,
                     note = reg.threatDetails,
-                    adminName = ADMIN_OWNER_NAME
+                    adminName = ADMIN_OWNER_NAME,
+                    withoutAllClear = withoutAllClear
                 )
                 _latestAdminBroadcast.value = broadcast
                 saveLatestBroadcast(broadcast)
@@ -1045,23 +1353,26 @@ class AlertRepository(
                 activeLevels = levelsForDisplay,
                 timestamp = timestamp,
                 threatDetails = reg.threatDetails,
-                source = source
+                source = source,
+                withoutAllClear = withoutAllClear
             )
             _events.update { current ->
-                val next = listOf(event) + current.take(49)
+                val next = listOf(event) + current.take(MAX_PERSISTED_EVENTS - 1)
                 saveEvents(next)
                 next
             }
 
             if (emitAudioAndNotification) {
                 val tracksToPlay = audioOverride ?: levelsForDisplay
-                if (tracksToPlay.isNotEmpty()) {
+                if (tracksToPlay.isNotEmpty() || explicitRawResIds.isNotEmpty()) {
                     scope.launch {
                         _alertStateChanges.emit(
                             AlertChangeEvent(
                                 region = reg,
                                 levelsToPlay = tracksToPlay,
-                                allActiveLevels = levelsForDisplay
+                                allActiveLevels = levelsForDisplay,
+                                withoutAllClear = withoutAllClear,
+                                explicitRawResIds = explicitRawResIds
                             )
                         )
                     }
@@ -1071,27 +1382,50 @@ class AlertRepository(
         return updatedItem
     }
 
-    fun triggerKryveOzeroAlert(level: AlertLevel, threatNote: String = "") {
-        setRegionAlertLevel(KRYVE_OZERO_ID, level, threatNote)
+    fun triggerKryveOzeroAlert(
+        level: AlertLevel,
+        threatNote: String = "",
+        withoutAllClear: Boolean = false
+    ) {
+        setRegionAlertLevel(KRYVE_OZERO_ID, level, threatNote, withoutAllClear = withoutAllClear)
     }
 
-    fun triggerKryveOzeroMultipleAlerts(levels: Set<AlertLevel>, threatNote: String = "") {
-        setRegionActiveAlerts(KRYVE_OZERO_ID, levels, threatNote)
+    fun triggerKryveOzeroMultipleAlerts(
+        levels: Set<AlertLevel>,
+        threatNote: String = "",
+        withoutAllClear: Boolean = false
+    ) {
+        setRegionActiveAlerts(
+            regionId = KRYVE_OZERO_ID,
+            levels = levels,
+            threatNote = threatNote,
+            withoutAllClear = withoutAllClear
+        )
     }
 
-    // Master Total All-Clear: sets all regions and hromadas across Ukraine to SAFE, saves & broadcasts online
-    fun triggerTotalAllClear() {
+    // Master Total All-Clear: sets all districts across Ukraine to SAFE (with or without all-clear audio)
+    fun triggerTotalAllClear(withoutAllClear: Boolean = false) {
         if (firestoreSync != null && authUserId != null && (!isVerifiedGoogleAdmin || _userRole.value != UserRole.ADMIN)) {
             return
         }
         val now = System.currentTimeMillis()
-        val totalNote = "Тотальний відбій для всієї території України! Небезпека минула."
+        val totalNote = if (withoutAllClear) {
+            "Тривоги знято по всіх районах (без відбою)."
+        } else {
+            "Тотальний відбій для всієї території України! Небезпека минула."
+        }
         val previouslyDangerous = _regions.value.filter { it.currentLevel.isDanger || it.id == KRYVE_OZERO_ID }
         _regions.value.forEach {
             manualOverrideTimestamps[it.id] = now
             lastLocalAdminWriteMs[it.id] = now
         }
-        applyTotalAllClearLocally(totalNote, "Адміністратор $ADMIN_OWNER_NAME", now, emitAudio = true)
+        applyTotalAllClearLocally(
+            totalNote = totalNote,
+            source = "Адміністратор $ADMIN_OWNER_NAME",
+            timestamp = now,
+            emitAudio = !withoutAllClear,
+            withoutAllClear = withoutAllClear
+        )
 
         val eventId = UUID.randomUUID().toString()
         markRemoteIdProcessed(eventId)
@@ -1108,13 +1442,14 @@ class AlertRepository(
                         activeLevels = emptyList(),
                         threatDetails = totalNote,
                         adminName = ADMIN_OWNER_NAME,
-                        alertStartTime = null
+                        alertStartTime = null,
+                        withoutAllClear = withoutAllClear
                     )
                 }
                 firestoreSync.publishAlertEvent(
                     eventId = eventId,
                     regionId = "all_ukraine",
-                    regionName = "Вся територія України (ВЕСЬ ВІДБІЙ)",
+                    regionName = if (withoutAllClear) "Вся Україна (ЗНЯТО БЕЗ ВІДБОЮ)" else "Вся територія України (ВЕСЬ ВІДБІЙ)",
                     level = AlertLevel.SAFE.name,
                     activeLevels = listOf(AlertLevel.SAFE.name),
                     threatDetails = totalNote,
@@ -1122,6 +1457,7 @@ class AlertRepository(
                     adminName = ADMIN_OWNER_NAME,
                     isBroadcastBanner = true,
                     isTotalAllClear = true,
+                    withoutAllClear = withoutAllClear,
                     clientTimestampMs = now
                 )
             }
@@ -1133,10 +1469,11 @@ class AlertRepository(
             put("senderDeviceId", deviceId)
             put("note", totalNote)
             put("adminName", ADMIN_OWNER_NAME)
+            put("withoutAllClear", withoutAllClear)
             put("timestamp", now)
         }
         publishEnvelopeOnline(
-            title = "🟢 ВЕСЬ ВІДБІЙ — Вся Україна",
+            title = if (withoutAllClear) "ЗНЯТО БЕЗ ВІДБОЮ — Вся Україна" else "🟢 ВЕСЬ ВІДБІЙ — Вся Україна",
             envelope = envelope,
             priority = 4
         )
@@ -1146,7 +1483,8 @@ class AlertRepository(
         totalNote: String,
         source: String,
         timestamp: Long,
-        emitAudio: Boolean
+        emitAudio: Boolean,
+        withoutAllClear: Boolean = false
     ) {
         _regions.update { current ->
             current.map {
@@ -1154,7 +1492,8 @@ class AlertRepository(
                     currentLevel = AlertLevel.SAFE,
                     activeAlerts = emptySet(),
                     alertStartTime = null,
-                    threatDetails = totalNote
+                    threatDetails = totalNote,
+                    withoutAllClear = withoutAllClear
                 )
             }
         }
@@ -1174,38 +1513,217 @@ class AlertRepository(
 
         val broadcast = AdminBroadcast(
             id = UUID.randomUUID().toString(),
-            regionName = "Вся територія України (ВЕСЬ ВІДБІЙ)",
+            regionName = if (withoutAllClear) "Вся Україна (ЗНЯТО БЕЗ ВІДБОЮ)" else "Вся територія України (ВЕСЬ ВІДБІЙ)",
             level = AlertLevel.SAFE,
             activeLevels = listOf(AlertLevel.SAFE),
             timestamp = timestamp,
             note = totalNote,
-            adminName = ADMIN_OWNER_NAME
+            adminName = ADMIN_OWNER_NAME,
+            withoutAllClear = withoutAllClear
         )
         _latestAdminBroadcast.value = broadcast
         saveLatestBroadcast(broadcast)
 
         val event = AlertEventLog(
             id = UUID.randomUUID().toString(),
-            regionName = "Вся Україна (Тотальний відбій)",
+            regionName = if (withoutAllClear) "Вся Україна (Знято без відбою)" else "Вся Україна (Тотальний відбій)",
             level = AlertLevel.SAFE,
             activeLevels = listOf(AlertLevel.SAFE),
             timestamp = timestamp,
             threatDetails = totalNote,
-            source = source
+            source = source,
+            withoutAllClear = withoutAllClear
         )
         _events.update { current ->
-            val next = listOf(event) + current.take(49)
+            val next = listOf(event) + current.take(MAX_PERSISTED_EVENTS - 1)
             saveEvents(next)
             next
         }
 
-        if (emitAudio) {
+        if (emitAudio && !withoutAllClear) {
             scope.launch {
                 _alertStateChanges.emit(
                     AlertChangeEvent(
                         region = kryveOzero,
                         levelsToPlay = listOf(AlertLevel.SAFE),
-                        allActiveLevels = listOf(AlertLevel.SAFE)
+                        allActiveLevels = listOf(AlertLevel.SAFE),
+                        withoutAllClear = false
+                    )
+                )
+            }
+        }
+    }
+
+    // Master All-Ukraine Alert: sets EVERY district/oblast across all of Ukraine to danger and speaks strictly ONCE
+    fun triggerAllUkraineAlert(
+        level: AlertLevel = AlertLevel.RED,
+        levels: Set<AlertLevel> = setOf(level),
+        threatNote: String = "",
+        withoutAllClear: Boolean = false
+    ) {
+        if (firestoreSync != null && authUserId != null && (!isVerifiedGoogleAdmin || _userRole.value != UserRole.ADMIN)) {
+            return
+        }
+        val cleanDangerSet = levels.filter { it.isDanger }.toSet().ifEmpty {
+            if (level.isDanger) setOf(level) else setOf(AlertLevel.RED)
+        }
+        val orderedActive = cleanDangerSet.sortedByDescending { it.priorityOrder }
+        val primaryLevel = AlertLevel.primaryOf(cleanDangerSet)
+        val now = System.currentTimeMillis()
+        val noClearLabel = if (withoutAllClear) " [БЕЗ ВІДБОЮ]" else ""
+        val resolvedNote = threatNote.ifBlank {
+            if (orderedActive.size > 1) {
+                "ТРИВОГА ПО ВСІЙ УКРАЇНІ!$noClearLabel " + orderedActive.joinToString(" + ") { it.shortName }
+            } else {
+                "УВАГА! ${primaryLevel.title.uppercase()} ПО ВСІЙ ТЕРИТОРІЇ УКРАЇНИ!$noClearLabel Негайно в укриття!"
+            }
+        }
+
+        _regions.value.forEach {
+            manualOverrideTimestamps[it.id] = now
+            lastLocalAdminWriteMs[it.id] = now
+        }
+
+        applyAllUkraineAlertLocally(
+            activeDangerLevels = cleanDangerSet,
+            threatNote = resolvedNote,
+            source = "Адміністратор $ADMIN_OWNER_NAME",
+            timestamp = now,
+            emitAudio = true,
+            withoutAllClear = withoutAllClear
+        )
+
+        val eventId = UUID.randomUUID().toString()
+        markRemoteIdProcessed(eventId)
+        markRemoteIdProcessed("fs_$eventId")
+        markRemoteIdProcessed("banner_$eventId")
+
+        val activeLevelNames = orderedActive.map { it.name }
+        if (firestoreSync != null && authUserId != null && isVerifiedGoogleAdmin) {
+            scope.launch {
+                _regions.value.forEach { reg ->
+                    firestoreSync.publishRegionAlert(
+                        regionId = reg.id,
+                        regionName = reg.name,
+                        currentLevel = primaryLevel.name,
+                        activeLevels = activeLevelNames,
+                        threatDetails = resolvedNote,
+                        adminName = ADMIN_OWNER_NAME,
+                        alertStartTime = reg.alertStartTime ?: now,
+                        withoutAllClear = withoutAllClear
+                    )
+                }
+                firestoreSync.publishAlertEvent(
+                    eventId = eventId,
+                    regionId = "all_ukraine",
+                    regionName = "Вся територія України (ВСЯ УКРАЇНА)",
+                    level = primaryLevel.name,
+                    activeLevels = activeLevelNames,
+                    threatDetails = resolvedNote,
+                    source = "Адміністратор $ADMIN_OWNER_NAME",
+                    adminName = ADMIN_OWNER_NAME,
+                    isBroadcastBanner = true,
+                    isTotalAllClear = false,
+                    withoutAllClear = withoutAllClear,
+                    clientTimestampMs = now
+                )
+            }
+        }
+
+        val activeJson = JSONArray().apply { activeLevelNames.forEach { put(it) } }
+        val envelope = JSONObject().apply {
+            put("type", "ALL_UKRAINE_ALERT")
+            put("eventId", eventId)
+            put("senderDeviceId", deviceId)
+            put("level", primaryLevel.name)
+            put("activeLevels", activeJson)
+            put("note", resolvedNote)
+            put("adminName", ADMIN_OWNER_NAME)
+            put("withoutAllClear", withoutAllClear)
+            put("timestamp", now)
+        }
+        publishEnvelopeOnline(
+            title = "🚨 ${primaryLevel.shortName.uppercase()} ПО ВСІЙ УКРАЇНІ",
+            envelope = envelope,
+            priority = 5
+        )
+    }
+
+    private fun applyAllUkraineAlertLocally(
+        activeDangerLevels: Set<AlertLevel>,
+        threatNote: String,
+        source: String,
+        timestamp: Long,
+        emitAudio: Boolean,
+        withoutAllClear: Boolean = false
+    ) {
+        val cleanDanger = activeDangerLevels.filter { it.isDanger }.toSet().ifEmpty { setOf(AlertLevel.RED) }
+        val orderedActive = cleanDanger.sortedByDescending { it.priorityOrder }
+        val primary = AlertLevel.primaryOf(cleanDanger)
+
+        _regions.update { current ->
+            current.map { item ->
+                item.copy(
+                    currentLevel = primary,
+                    activeAlerts = cleanDanger,
+                    alertStartTime = item.alertStartTime ?: timestamp,
+                    threatDetails = threatNote,
+                    withoutAllClear = withoutAllClear
+                )
+            }
+        }
+        saveRegionsState()
+
+        val allUkrTitle = "Вся територія України (ВСЯ УКРАЇНА)"
+        val broadcast = AdminBroadcast(
+            id = UUID.randomUUID().toString(),
+            regionName = allUkrTitle,
+            level = primary,
+            activeLevels = orderedActive,
+            timestamp = timestamp,
+            note = threatNote,
+            adminName = ADMIN_OWNER_NAME,
+            withoutAllClear = withoutAllClear
+        )
+        _latestAdminBroadcast.value = broadcast
+        saveLatestBroadcast(broadcast)
+
+        val event = AlertEventLog(
+            id = UUID.randomUUID().toString(),
+            regionName = allUkrTitle,
+            level = primary,
+            activeLevels = orderedActive,
+            timestamp = timestamp,
+            threatDetails = threatNote,
+            source = source,
+            withoutAllClear = withoutAllClear
+        )
+        _events.update { current ->
+            val next = listOf(event) + current.take(MAX_PERSISTED_EVENTS - 1)
+            saveEvents(next)
+            next
+        }
+
+        if (emitAudio) {
+            val allUkraineRegion = RegionItem(
+                id = "all_ukraine",
+                name = allUkrTitle,
+                oblast = "Україна",
+                isHromada = false,
+                isMonitored = true,
+                currentLevel = primary,
+                activeAlerts = cleanDanger,
+                alertStartTime = timestamp,
+                threatDetails = threatNote,
+                withoutAllClear = withoutAllClear
+            )
+            scope.launch {
+                _alertStateChanges.emit(
+                    AlertChangeEvent(
+                        region = allUkraineRegion,
+                        levelsToPlay = orderedActive,
+                        allActiveLevels = orderedActive,
+                        withoutAllClear = withoutAllClear
                     )
                 )
             }
@@ -1213,20 +1731,70 @@ class AlertRepository(
     }
 
     // Dedicated Street Fights All-Clear: clears STREET_FIGHTS while keeping any other active threats
-    fun triggerStreetFightsAllClear(regionId: String = KRYVE_OZERO_ID) {
+    fun triggerStreetFightsAllClear(
+        regionId: String = KRYVE_OZERO_ID,
+        withoutAllClear: Boolean = false
+    ) {
         val current = _regions.value.find { it.id == regionId }
         val remaining = current?.effectiveActiveAlerts?.filter { it != AlertLevel.STREET_FIGHTS }?.toSet()
             ?: emptySet()
         val sfNote = if (remaining.isEmpty()) {
-            "Відбій загрози вуличних боїв! Ситуація в громаді стабілізована та під повним контролем."
+            if (withoutAllClear) {
+                "Загрозу вуличних боїв знято (без відбою)."
+            } else {
+                "Відбій загрози вуличних боїв! Ситуація в громаді стабілізована та під повним контролем."
+            }
         } else {
-            "Відбій вуличних боїв. Залишаються активними: " + remaining.joinToString(", ") { it.shortName }
+            val prefix = if (withoutAllClear) "Знято вуличні бої (без відбою)" else "Відбій вуличних боїв"
+            "$prefix. Залишаються активними: " + remaining.joinToString(", ") { it.shortName }
         }
         setRegionActiveAlerts(
             regionId = regionId,
             levels = remaining,
             threatNote = sfNote,
-            audioOverride = listOf(AlertLevel.SAFE)
+            audioOverride = if (withoutAllClear) emptyList() else listOf(AlertLevel.SAFE),
+            withoutAllClear = withoutAllClear,
+            emitAudio = !withoutAllClear
+        )
+    }
+
+    // Dedicated Per-Type All-Clear (Artillery, Chemical, Radiation, Street Fights, etc.):
+    // Clears the specific threat while preserving any other simultaneous threats and plays its dedicated clear voice recording.
+    fun triggerSpecificAllClear(
+        regionId: String = KRYVE_OZERO_ID,
+        targetLevel: AlertLevel,
+        withoutAllClear: Boolean = false
+    ) {
+        if (targetLevel == AlertLevel.STREET_FIGHTS) {
+            triggerStreetFightsAllClear(regionId = regionId, withoutAllClear = withoutAllClear)
+            return
+        }
+        val current = _regions.value.find { it.id == regionId }
+        val remaining = current?.effectiveActiveAlerts?.filter { it != targetLevel }?.toSet()
+            ?: emptySet()
+        val clearNote = if (remaining.isEmpty()) {
+            if (withoutAllClear) {
+                "${targetLevel.shortName}: загрозу знято (без відбою)."
+            } else {
+                "${targetLevel.allClearTitle}! Загроза минула."
+            }
+        } else {
+            val prefix = if (withoutAllClear) {
+                "Знято «${targetLevel.shortName}» (без відбою)"
+            } else {
+                targetLevel.allClearTitle
+            }
+            "$prefix. Залишаються активними: " + remaining.joinToString(", ") { it.shortName }
+        }
+        val rawIds = if (withoutAllClear) emptyList() else listOf(targetLevel.clearSoundResId)
+        setRegionActiveAlerts(
+            regionId = regionId,
+            levels = remaining,
+            threatNote = clearNote,
+            audioOverride = if (withoutAllClear) emptyList() else listOf(AlertLevel.SAFE),
+            explicitRawResIds = rawIds,
+            withoutAllClear = withoutAllClear,
+            emitAudio = !withoutAllClear
         )
     }
 
@@ -1267,13 +1835,12 @@ class AlertRepository(
             } catch (_: Exception) {}
         }
 
-        // Default initial community discussion
         val defaultComments = listOf(
             DiscussionComment(
                 id = "admin_welcome",
                 authorName = "Денис (Адміністратор)",
                 authorRole = UserRole.ADMIN,
-                text = "Вітаю у прямому часі громади «Омастротривога»! Тут публікуються термінові звіти та сповіщення. Звуковий сигнал звучить рівно один раз без зациклень.",
+                text = "Вітаю у прямому часі громади «Омастротривога»! Тут публікуються термінові звіти по районах та сповіщення. Усе зберігається автоматично.",
                 timestamp = System.currentTimeMillis() - 25 * 60 * 1000,
                 regionTag = "Кривоозерська громада",
                 isAdminVerified = true
@@ -1286,15 +1853,6 @@ class AlertRepository(
                 timestamp = System.currentTimeMillis() - 15 * 60 * 1000,
                 regionTag = "Криве Озеро",
                 isAdminVerified = false
-            ),
-            DiscussionComment(
-                id = "c2",
-                authorName = "Наталія М.",
-                authorRole = UserRole.USER,
-                text = "Сповіщення приходить миттєво, відбій чути чітко.",
-                timestamp = System.currentTimeMillis() - 5 * 60 * 1000,
-                regionTag = "Кривоозерська громада",
-                isAdminVerified = false
             )
         )
         _comments.value = defaultComments
@@ -1304,7 +1862,7 @@ class AlertRepository(
     private fun saveComments(list: List<DiscussionComment>) {
         try {
             val array = JSONArray()
-            list.take(60).forEach { item ->
+            list.take(MAX_PERSISTED_COMMENTS).forEach { item ->
                 val obj = JSONObject().apply {
                     put("id", item.id)
                     put("authorName", item.authorName)
@@ -1316,7 +1874,7 @@ class AlertRepository(
                 }
                 array.put(obj)
             }
-            prefs.edit().putString(PREF_COMMENTS, array.toString()).apply()
+            prefs.edit().putString(PREF_COMMENTS, array.toString()).commit()
         } catch (_: Exception) {}
     }
 
@@ -1331,8 +1889,13 @@ class AlertRepository(
 
         val isAdmin = role == UserRole.ADMIN && (firestoreSync == null || isVerifiedGoogleAdmin)
         val effectiveRole = if (isAdmin) UserRole.ADMIN else UserRole.USER
+        val resolvedAdminName = currentAdminName
         val finalAuthor = if (isAdmin) {
-            if (authorName.isNotBlank() && !authorName.contains("Денис")) "$authorName (Денис)" else "Денис (Адміністратор)"
+            when {
+                authorName.isNotBlank() && !authorName.contains(resolvedAdminName) -> "$authorName ($resolvedAdminName)"
+                resolvedAdminName.contains("Адміністратор") -> resolvedAdminName
+                else -> "$resolvedAdminName (Адміністратор)"
+            }
         } else {
             authorName.ifBlank { authDisplayName.ifBlank { "Житель громади" } }
         }
@@ -1373,7 +1936,6 @@ class AlertRepository(
             }
         }
 
-        // Publish comment to live online channel so other users see it
         markRemoteIdProcessed(commentId)
         val envelope = JSONObject().apply {
             put("type", "COMMENT")
@@ -1395,47 +1957,54 @@ class AlertRepository(
 
     fun saveAuthorName(name: String) {
         _authorName.value = name
-        prefs.edit().putString(PREF_AUTHOR_NAME, name).apply()
+        prefs.edit().putString(PREF_AUTHOR_NAME, name).commit()
         syncUserProfileToFirestore()
     }
 
     fun saveSelectedTab(index: Int) {
         val safeIndex = index.coerceIn(0, 4)
         _savedSelectedTab.value = safeIndex
-        prefs.edit().putInt(PREF_SELECTED_TAB, safeIndex).apply()
+        prefs.edit().putInt(PREF_SELECTED_TAB, safeIndex).commit()
         syncUserProfileToFirestore()
     }
 
     fun saveSelectedRegionId(regionId: String) {
         _savedSelectedRegionId.value = regionId
-        prefs.edit().putString(PREF_SELECTED_REGION_ID, regionId).apply()
+        prefs.edit().putString(PREF_SELECTED_REGION_ID, regionId).commit()
         syncUserProfileToFirestore()
     }
 
     fun updateOnlineChannelId(newChannel: String) {
         val sanitized = syncClient.sanitizeChannelId(newChannel).ifBlank { DEFAULT_ONLINE_CHANNEL }
         _onlineChannelId.value = sanitized
-        prefs.edit().putString(PREF_ONLINE_CHANNEL, sanitized).apply()
+        prefs.edit().putString(PREF_ONLINE_CHANNEL, sanitized).commit()
         syncUserProfileToFirestore()
         syncNow()
     }
 
     fun setDsnsAutoSyncEnabled(enabled: Boolean) {
         _dsnsAutoSyncEnabled.value = enabled
-        prefs.edit().putBoolean(PREF_DSNS_AUTO_SYNC, enabled).apply()
+        prefs.edit().putBoolean(PREF_DSNS_AUTO_SYNC, enabled).commit()
         syncUserProfileToFirestore()
         if (enabled) syncNow()
     }
 
-    // Role management
     fun setUserRole(role: UserRole) {
         if (firestoreSync != null && authUserId != null && role == UserRole.ADMIN && !isVerifiedGoogleAdmin) {
             _userRole.value = UserRole.USER
-            prefs.edit().putString(PREF_ROLE, UserRole.USER.name).apply()
+            prefs.edit().putString(PREF_ROLE, UserRole.USER.name).commit()
             return
         }
         _userRole.value = role
-        prefs.edit().putString(PREF_ROLE, role.name).apply()
+        val editor = prefs.edit().putString(PREF_ROLE, role.name)
+        if (firestoreSync != null && authUserId != null && isVerifiedGoogleAdmin) {
+            if (role == UserRole.USER) {
+                editor.putString(PREF_ADMIN_LOCKED_BY_UID, authUserId)
+            } else {
+                editor.remove(PREF_ADMIN_LOCKED_BY_UID)
+            }
+        }
+        editor.commit()
     }
 
     fun verifyAdminPin(pin: String): Boolean {
@@ -1447,7 +2016,7 @@ class AlertRepository(
     }
 
     fun updateAdminPin(newPin: String) {
-        prefs.edit().putString(PREF_PIN, newPin).apply()
+        prefs.edit().putString(PREF_PIN, newPin).commit()
     }
 
     fun updateSoundSettings(newSettings: SoundSettings) {
@@ -1456,7 +2025,7 @@ class AlertRepository(
             .putFloat(PREF_VOLUME, newSettings.volume)
             .putBoolean(PREF_VIBRATION, newSettings.vibrationEnabled)
             .putBoolean(PREF_AUTO_VOICE, newSettings.autoPlayVoice)
-            .apply()
+            .commit()
         syncUserProfileToFirestore()
     }
 
@@ -1468,7 +2037,6 @@ class AlertRepository(
 
     private fun startPeriodicSync() {
         scope.launch {
-            // Immediate online sync right at startup
             performOnlineSync()
             while (true) {
                 delay(10000)
@@ -1497,7 +2065,7 @@ class AlertRepository(
             if (result.isSuccess) {
                 val now = System.currentTimeMillis()
                 _lastSyncTimestamp.value = now
-                prefs.edit().putLong(PREF_LAST_SYNC_TS, now).apply()
+                prefs.edit().putLong(PREF_LAST_SYNC_TS, now).commit()
                 _isApiConnected.value = true
                 _onlineStatusMessage.value = "Онлайн • Надіслано в ефір"
             }
@@ -1508,12 +2076,12 @@ class AlertRepository(
     private fun markRemoteIdProcessed(id: String): Boolean {
         if (processedRemoteIds.contains(id)) return false
         processedRemoteIds.add(id)
-        if (processedRemoteIds.size > 250) {
-            val trimmed = processedRemoteIds.toList().takeLast(150).toSet()
+        if (processedRemoteIds.size > 400) {
+            val trimmed = processedRemoteIds.toList().takeLast(250).toSet()
             processedRemoteIds.clear()
             processedRemoteIds.addAll(trimmed)
         }
-        prefs.edit().putStringSet(PREF_PROCESSED_IDS, processedRemoteIds.toSet()).apply()
+        prefs.edit().putStringSet(PREF_PROCESSED_IDS, processedRemoteIds.toSet()).commit()
         return true
     }
 
@@ -1527,12 +2095,10 @@ class AlertRepository(
                 return
             }
 
-            // Automatic external DSNS alerts are disabled: only Administrator Denis activates/clears alerts.
-            // In Firebase mode, Firestore real-time listeners (strictly enforced by security rules) deliver verified admin alerts.
             var anySuccess = firestoreSync != null && authUserId != null
 
             if (firestoreSync == null) {
-                val channelRes = syncClient.pollChannelMessages(_onlineChannelId.value, since = "12h")
+                val channelRes = syncClient.pollChannelMessages(_onlineChannelId.value, since = "72h")
                 if (channelRes.isSuccess) {
                     anySuccess = true
                     val messages = channelRes.getOrNull().orEmpty()
@@ -1544,9 +2110,9 @@ class AlertRepository(
                 val now = System.currentTimeMillis()
                 _isApiConnected.value = true
                 _lastSyncTimestamp.value = now
-                prefs.edit().putLong(PREF_LAST_SYNC_TS, now).apply()
+                prefs.edit().putLong(PREF_LAST_SYNC_TS, now).commit()
                 _onlineStatusMessage.value = if (firestoreSync != null) {
-                    "Онлайн • Лише керування Дениса (Firebase)"
+                    "Онлайн • Збережено у хмарі та на пристрої"
                 } else {
                     "Онлайн • Лише керування Дениса"
                 }
@@ -1591,6 +2157,8 @@ class AlertRepository(
                         .ifEmpty { if (level.isDanger) setOf(level) else emptySet() }
                     val note = env.optString("note", "")
                     val adminName = env.optString("adminName", ADMIN_OWNER_NAME)
+                    val noClear = env.optBoolean("withoutAllClear", false)
+                    val shouldEmitAudio = env.optBoolean("emitAudio", !noClear || parsedActive.isNotEmpty())
                     manualOverrideTimestamps[regionId] = timestamp
                     applyRegionMultiAlertMutation(
                         regionId = regionId,
@@ -1599,19 +2167,46 @@ class AlertRepository(
                         source = "Адміністратор $adminName (Онлайн)",
                         timestamp = timestamp,
                         emitBroadcastBanner = true,
-                        emitAudioAndNotification = isRecent
+                        emitAudioAndNotification = isRecent && shouldEmitAudio,
+                        withoutAllClear = noClear
                     )
                 }
 
                 "TOTAL_CLEAR" -> {
                     val note = env.optString("note", "Тотальний відбій для всієї території України!")
                     val adminName = env.optString("adminName", ADMIN_OWNER_NAME)
+                    val noClear = env.optBoolean("withoutAllClear", false)
                     _regions.value.forEach { manualOverrideTimestamps[it.id] = timestamp }
                     applyTotalAllClearLocally(
                         totalNote = note,
                         source = "Адміністратор $adminName (Онлайн)",
                         timestamp = timestamp,
-                        emitAudio = isRecent
+                        emitAudio = isRecent && !noClear,
+                        withoutAllClear = noClear
+                    )
+                }
+
+                "ALL_UKRAINE_ALERT" -> {
+                    val level = try {
+                        AlertLevel.valueOf(env.optString("level", AlertLevel.RED.name))
+                    } catch (_: Exception) {
+                        AlertLevel.RED
+                    }
+                    val parsedActive = parseAlertLevelsJsonArray(env.optJSONArray("activeLevels"))
+                        .filter { it.isDanger }
+                        .toSet()
+                        .ifEmpty { setOf(if (level.isDanger) level else AlertLevel.RED) }
+                    val note = env.optString("note", "ТРИВОГА ПО ВСІЙ ТЕРИТОРІЇ УКРАЇНИ!")
+                    val adminName = env.optString("adminName", ADMIN_OWNER_NAME)
+                    val noClear = env.optBoolean("withoutAllClear", false)
+                    _regions.value.forEach { manualOverrideTimestamps[it.id] = timestamp }
+                    applyAllUkraineAlertLocally(
+                        activeDangerLevels = parsedActive,
+                        threatNote = note,
+                        source = "Адміністратор $adminName (Онлайн)",
+                        timestamp = timestamp,
+                        emitAudio = isRecent,
+                        withoutAllClear = noClear
                     )
                 }
 
@@ -1651,104 +2246,10 @@ class AlertRepository(
         }
     }
 
-    private fun applyOfficialOnlineAlerts(states: Map<String, OfficialOblastStatus>) {
-        if (states.isEmpty()) return
-        val now = System.currentTimeMillis()
-        val hasSavedStatesBefore = prefs.contains(PREF_REGIONS_STATE)
-        val newlyChangedMonitored = mutableListOf<Pair<RegionItem, AlertLevel>>()
-        var anyRegionChanged = false
-
-        val updatedList = _regions.value.map { region ->
-            val official = findOfficialStatusForRegion(region, states) ?: return@map region
-
-            // Do not overwrite recent manual Admin Denis overrides or special threats
-            val overrideTs = manualOverrideTimestamps[region.id] ?: 0L
-            val isManualProtected = overrideTs > 0L &&
-                (now - overrideTs) < ADMIN_OVERRIDE_GRACE_MS &&
-                official.changedAtMillis <= overrideTs
-            val isSpecialMode = region.effectiveActiveAlerts.any {
-                it == AlertLevel.STREET_FIGHTS || it == AlertLevel.CIVIL_DEFENSE
-            }
-            if (isManualProtected || (isSpecialMode && (now - overrideTs) < ADMIN_OVERRIDE_GRACE_MS)) {
-                return@map region
-            }
-
-            val targetLevel = if (official.isAlertActive) AlertLevel.RED else AlertLevel.SAFE
-            val targetSet = if (official.isAlertActive) setOf(AlertLevel.RED) else emptySet()
-            if (region.currentLevel != targetLevel || region.activeAlerts != targetSet) {
-                anyRegionChanged = true
-                val newDetails = if (targetLevel == AlertLevel.RED) {
-                    "Офіційна повітряна тривога (Онлайн API ДСНС)"
-                } else {
-                    "Відбій повітряної тривоги (Онлайн API ДСНС)"
-                }
-                val nextItem = region.copy(
-                    currentLevel = targetLevel,
-                    activeAlerts = targetSet,
-                    alertStartTime = if (targetLevel.isDanger) official.changedAtMillis else null,
-                    threatDetails = newDetails
-                )
-                if (hasSavedStatesBefore && region.isMonitored) {
-                    newlyChangedMonitored.add(Pair(nextItem, targetLevel))
-                }
-                nextItem
-            } else {
-                region
-            }
-        }
-
-        if (anyRegionChanged) {
-            _regions.value = updatedList
-            saveRegionsState()
-        }
-
-        if (newlyChangedMonitored.isNotEmpty()) {
-            val newLogs = newlyChangedMonitored.map { (reg, lvl) ->
-                AlertEventLog(
-                    id = UUID.randomUUID().toString(),
-                    regionName = reg.name,
-                    level = lvl,
-                    activeLevels = listOf(lvl),
-                    timestamp = now,
-                    threatDetails = reg.threatDetails,
-                    source = "ДСНС / Онлайн API"
-                )
-            }
-            _events.update { current ->
-                val next = (newLogs + current).take(50)
-                saveEvents(next)
-                next
-            }
-            val primaryChange = newlyChangedMonitored.firstOrNull { it.first.id == KRYVE_OZERO_ID }
-                ?: newlyChangedMonitored.first()
-            scope.launch {
-                _alertStateChanges.emit(
-                    AlertChangeEvent(
-                        region = primaryChange.first,
-                        levelsToPlay = listOf(primaryChange.second),
-                        allActiveLevels = listOf(primaryChange.second)
-                    )
-                )
-            }
-        }
-    }
-
-    private fun findOfficialStatusForRegion(
-        region: RegionItem,
-        states: Map<String, OfficialOblastStatus>
-    ): OfficialOblastStatus? {
-        states[region.oblast]?.let { return it }
-        states[region.name]?.let { return it }
-        if (region.id == "crimea") {
-            states["Автономна Республіка Крим"]?.let { return it }
-        }
-        return null
-    }
-
     private fun syncUserProfileToFirestore() {
         val fs = firestoreSync ?: return
         if (authUserId == null) return
-        val monitoredIds = _regions.value.filter { it.isMonitored }.map { it.id }
+        val monitoredIds = _regions.value.filter { it.isMonitored }.map { it.id }.take(MAX_PINNED_REGIONS)
         val sound = _soundSettings.value
         val display = _authorName.value.ifBlank { authDisplayName }.ifBlank {
             authUserEmail.substringBefore("@").ifBlank { "Користувач" }
@@ -1813,7 +2314,7 @@ class AlertRepository(
 
     private fun applyRemoteUserProfile(profile: FirestoreUserProfile) {
         if (profile.monitoredRegionIds.isNotEmpty()) {
-            val remoteMonitored = profile.monitoredRegionIds.toSet()
+            val remoteMonitored = profile.monitoredRegionIds.take(MAX_PINNED_REGIONS).toSet()
             _regions.update { current ->
                 current.map { it.copy(isMonitored = remoteMonitored.contains(it.id)) }
             }
@@ -1831,24 +2332,24 @@ class AlertRepository(
             .putFloat(PREF_VOLUME, updatedSound.volume)
             .putBoolean(PREF_VIBRATION, updatedSound.vibrationEnabled)
             .putBoolean(PREF_AUTO_VOICE, updatedSound.autoPlayVoice)
-            .apply()
+            .commit()
 
         if (profile.displayName.isNotBlank() && _authorName.value.isBlank()) {
             _authorName.value = profile.displayName
-            prefs.edit().putString(PREF_AUTHOR_NAME, profile.displayName).apply()
+            prefs.edit().putString(PREF_AUTHOR_NAME, profile.displayName).commit()
         }
         if (profile.onlineChannelId.isNotBlank()) {
             _onlineChannelId.value = profile.onlineChannelId
-            prefs.edit().putString(PREF_ONLINE_CHANNEL, profile.onlineChannelId).apply()
+            prefs.edit().putString(PREF_ONLINE_CHANNEL, profile.onlineChannelId).commit()
         }
         _dsnsAutoSyncEnabled.value = profile.dsnsAutoSyncEnabled
-        prefs.edit().putBoolean(PREF_DSNS_AUTO_SYNC, profile.dsnsAutoSyncEnabled).apply()
+        prefs.edit().putBoolean(PREF_DSNS_AUTO_SYNC, profile.dsnsAutoSyncEnabled).commit()
         val safeTab = profile.selectedTab.toInt().coerceIn(0, 4)
         _savedSelectedTab.value = safeTab
-        prefs.edit().putInt(PREF_SELECTED_TAB, safeTab).apply()
+        prefs.edit().putInt(PREF_SELECTED_TAB, safeTab).commit()
         if (profile.selectedRegionId.isNotBlank()) {
             _savedSelectedRegionId.value = profile.selectedRegionId
-            prefs.edit().putString(PREF_SELECTED_REGION_ID, profile.selectedRegionId).apply()
+            prefs.edit().putString(PREF_SELECTED_REGION_ID, profile.selectedRegionId).commit()
         }
     }
 
@@ -1877,13 +2378,18 @@ class AlertRepository(
                 val nextStart = if (primary.isDanger) (remote.alertStartTime ?: region.alertStartTime ?: remoteTs) else null
                 val nextDetails = remote.threatDetails.ifBlank { region.threatDetails }
 
-                if (region.currentLevel != primary || region.activeAlerts != activeSet || region.threatDetails != nextDetails) {
+                if (region.currentLevel != primary ||
+                    region.activeAlerts != activeSet ||
+                    region.threatDetails != nextDetails ||
+                    region.withoutAllClear != remote.withoutAllClear
+                ) {
                     changed = true
                     region.copy(
                         currentLevel = primary,
                         activeAlerts = activeSet,
                         alertStartTime = nextStart,
-                        threatDetails = nextDetails
+                        threatDetails = nextDetails,
+                        withoutAllClear = remote.withoutAllClear
                     )
                 } else {
                     region
@@ -1896,8 +2402,8 @@ class AlertRepository(
         }
         _isApiConnected.value = true
         _lastSyncTimestamp.value = now
-        prefs.edit().putLong(PREF_LAST_SYNC_TS, now).apply()
-        _onlineStatusMessage.value = "Онлайн • Лише керування Дениса (Firebase)"
+        prefs.edit().putLong(PREF_LAST_SYNC_TS, now).commit()
+        _onlineStatusMessage.value = "Онлайн • Збережено у хмарі та на пристрої"
     }
 
     private fun applyRemoteAlertEvents(remoteEvents: List<FirestoreAlertEvent>) {
@@ -1921,7 +2427,8 @@ class AlertRepository(
                 activeLevels = active,
                 timestamp = ts,
                 threatDetails = ev.threatDetails,
-                source = ev.source.ifBlank { "Адміністратор ${ev.adminName}" }
+                source = ev.source.ifBlank { "Адміністратор ${ev.adminName}" },
+                withoutAllClear = ev.withoutAllClear
             )
         }
 
@@ -1929,7 +2436,7 @@ class AlertRepository(
             val merged = (mapped + current)
                 .distinctBy { it.id }
                 .sortedByDescending { it.timestamp }
-                .take(50)
+                .take(MAX_PERSISTED_EVENTS)
             saveEvents(merged)
             merged
         }
@@ -1952,7 +2459,8 @@ class AlertRepository(
                     activeLevels = active,
                     timestamp = bannerTs,
                     note = newestBannerSource.threatDetails,
-                    adminName = newestBannerSource.adminName.ifBlank { ADMIN_OWNER_NAME }
+                    adminName = newestBannerSource.adminName.ifBlank { ADMIN_OWNER_NAME },
+                    withoutAllClear = newestBannerSource.withoutAllClear
                 )
                 _latestAdminBroadcast.value = broadcast
                 saveLatestBroadcast(broadcast)
@@ -1989,7 +2497,8 @@ class AlertRepository(
                     isMonitored = true,
                     currentLevel = primary,
                     activeAlerts = active.filter { it.isDanger }.toSet(),
-                    threatDetails = newestUnseen.threatDetails
+                    threatDetails = newestUnseen.threatDetails,
+                    withoutAllClear = newestUnseen.withoutAllClear
                 )
 
             if (newestUnseen.isTotalAllClear) {
@@ -1997,17 +2506,23 @@ class AlertRepository(
                     totalNote = newestUnseen.threatDetails.ifBlank { "Тотальний відбій для всієї території України!" },
                     source = newestUnseen.source.ifBlank { "Адміністратор Денис (Firebase)" },
                     timestamp = newestUnseen.clientTimestampMs.takeIf { it > 0L } ?: now,
-                    emitAudio = true
+                    emitAudio = !newestUnseen.withoutAllClear,
+                    withoutAllClear = newestUnseen.withoutAllClear
                 )
             } else {
-                scope.launch {
-                    _alertStateChanges.emit(
-                        AlertChangeEvent(
-                            region = targetRegion,
-                            levelsToPlay = active,
-                            allActiveLevels = active
+                // Skip all-clear sound if event was cleared with withoutAllClear=true
+                val shouldEmitAudio = primary.isDanger || !newestUnseen.withoutAllClear
+                if (shouldEmitAudio) {
+                    scope.launch {
+                        _alertStateChanges.emit(
+                            AlertChangeEvent(
+                                region = targetRegion,
+                                levelsToPlay = active,
+                                allActiveLevels = active,
+                                withoutAllClear = newestUnseen.withoutAllClear
+                            )
                         )
-                    )
+                    }
                 }
             }
         }
@@ -2042,7 +2557,7 @@ class AlertRepository(
             val merged = (mapped + current)
                 .distinctBy { it.id }
                 .sortedByDescending { it.timestamp }
-                .take(60)
+                .take(MAX_PERSISTED_COMMENTS)
             saveComments(merged)
             merged
         }

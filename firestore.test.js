@@ -156,23 +156,39 @@ test("Alert regions & events: verified Admin Denis writes, regular user reads vi
   await assertSucceeds(userDb.collection("alert_regions").where("isPublic", "==", true).get());
   await assertFails(userDb.collection("alert_regions").get());
 
-  // Verified Admin creates alert_event, regular user cannot create or modify
+  // Verified Admin creates alert_event (including new levels + withoutAllClear), regular user cannot create or modify
   const eventPayload = {
     regionId: "kryve_ozero",
     regionName: "Кривоозерська громада",
-    level: "RED",
-    activeLevels: ["RED"],
-    threatDetails: "Повітряна тривога!",
+    level: "MISSILE",
+    activeLevels: ["MISSILE", "DRONE"],
+    threatDetails: "Ракетна небезпека та БПЛА!",
     source: "Адміністратор Денис",
     adminName: "Денис",
     authorUid: ADMIN_UID,
     isBroadcastBanner: true,
     isTotalAllClear: false,
+    withoutAllClear: true,
     isPublic: true,
     clientTimestampMs: Date.now(),
     createdAt: ts,
   };
   await assertSucceeds(adminDb.collection("alert_events").doc("evt_1").set(eventPayload));
+  await assertSucceeds(
+    adminDb.collection("alert_regions").doc("pervomaisk_raion").set({
+      regionName: "Первомайський район",
+      currentLevel: "RADIATION",
+      activeLevels: ["DRONE", "CHEMICAL", "RADIATION"],
+      threatDetails: "Радіаційна та хімічна небезпека (без відбою)",
+      adminName: "Денис",
+      updatedByUid: ADMIN_UID,
+      isPublic: true,
+      withoutAllClear: true,
+      alertStartTime: Date.now(),
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
   await assertFails(userDb.collection("alert_events").doc("evt_2").set({ ...eventPayload, authorUid: BOB_UID }));
   await assertSucceeds(userDb.collection("alert_events").where("isPublic", "==", true).get());
 });
@@ -250,4 +266,72 @@ test("Community messages: user posts regular message, cannot spoof admin badge, 
     })
   );
   await assertSucceeds(aliceDb.collection("community_messages").where("isPublic", "==", true).get());
+});
+
+test("Second Admin semenenkom342@gmail.com: verified writes succeed, unverified fails", async () => {
+  const SECOND_ADMIN_UID = "admin_second_uid";
+  const secondAdminDb = testEnv.authenticatedContext(SECOND_ADMIN_UID, {
+    email: "semenenkom342@gmail.com",
+    email_verified: true,
+  }).firestore();
+
+  const unverifiedSecondDb = testEnv.authenticatedContext("unverified_second_uid", {
+    email: "semenenkom342@gmail.com",
+    email_verified: false,
+  }).firestore();
+
+  const ts = pastDate();
+  const regionPayload = {
+    regionName: "Первомайський район",
+    currentLevel: "DRONE",
+    activeLevels: ["DRONE"],
+    threatDetails: "Ударні БПЛА у напрямку району",
+    adminName: "Адміністратор #2",
+    updatedByUid: SECOND_ADMIN_UID,
+    isPublic: true,
+    alertStartTime: Date.now(),
+    createdAt: ts,
+    updatedAt: ts,
+  };
+
+  await assertFails(
+    unverifiedSecondDb.collection("alert_regions").doc("pervomaisk_raion").set({
+      ...regionPayload,
+      updatedByUid: "unverified_second_uid",
+    })
+  );
+
+  await assertSucceeds(secondAdminDb.collection("alert_regions").doc("pervomaisk_raion").set(regionPayload));
+  await assertSucceeds(
+    secondAdminDb.collection("alert_events").doc("evt_second_admin").set({
+      regionId: "pervomaisk_raion",
+      regionName: "Первомайський район",
+      level: "DRONE",
+      activeLevels: ["DRONE"],
+      threatDetails: "Загроза БПЛА",
+      source: "Адміністратор #2",
+      adminName: "Адміністратор #2",
+      authorUid: SECOND_ADMIN_UID,
+      isBroadcastBanner: true,
+      isTotalAllClear: false,
+      withoutAllClear: false,
+      isPublic: true,
+      clientTimestampMs: Date.now(),
+      createdAt: ts,
+    })
+  );
+  await assertSucceeds(
+    secondAdminDb.collection("community_messages").doc("msg_second_admin").set({
+      authorUid: SECOND_ADMIN_UID,
+      authorName: "Адміністратор #2 (Адміністратор)",
+      authorRole: "ADMIN",
+      text: "Підтверджене повідомлення другого адміна",
+      regionTag: "Первомайський район",
+      isAdminVerified: true,
+      isPublic: true,
+      clientTimestampMs: Date.now(),
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
 });

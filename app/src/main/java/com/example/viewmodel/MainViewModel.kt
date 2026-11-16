@@ -1,5 +1,6 @@
 package com.example.viewmodel
 
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -40,6 +41,8 @@ class MainViewModel(
     val comments: StateFlow<List<DiscussionComment>> = repository.comments
     val userRole: StateFlow<UserRole> = repository.userRole
     val soundSettings: StateFlow<SoundSettings> = repository.soundSettings
+    val customAudioPaths: StateFlow<Map<AlertLevel, String>> = repository.customAudioPaths
+    val pinnedLimitMessage: StateFlow<String?> = repository.pinnedLimitMessage
     val isApiConnected: StateFlow<Boolean> = repository.isApiConnected
     val isSyncing: StateFlow<Boolean> = repository.isSyncing
     val onlineStatusMessage: StateFlow<String> = repository.onlineStatusMessage
@@ -67,6 +70,14 @@ class MainViewModel(
     private var activeAiJob: Job? = null
 
     init {
+        soundPlayer.updateCustomAudioPaths(repository.customAudioPaths.value)
+
+        viewModelScope.launch {
+            repository.customAudioPaths.collect { paths ->
+                soundPlayer.updateCustomAudioPaths(paths)
+            }
+        }
+
         // Keep selected region restored and always synchronized with live updates
         viewModelScope.launch {
             repository.regions.collect { list ->
@@ -81,15 +92,19 @@ class MainViewModel(
         viewModelScope.launch {
             repository.alertStateChanges.collect { change ->
                 val settings = repository.soundSettings.value
-                // Plays each triggered speech recording sequentially, once each, and stops cleanly
-                soundPlayer.playAlertsSequence(change.levelsToPlay, settings)
+                soundPlayer.playAlertsOrExplicitRaw(
+                    levels = change.levelsToPlay,
+                    explicitRawResIds = change.explicitRawResIds,
+                    titleOverride = change.region.threatDetails.ifBlank { change.region.currentLevel.title },
+                    settings = settings
+                )
 
-                // Dispatch instant real-time notification
                 notificationHelper.showEmergencyNotification(
                     regionName = change.region.name,
                     levels = change.allActiveLevels,
                     details = change.region.threatDetails,
-                    isAdminBroadcast = true
+                    isAdminBroadcast = true,
+                    withoutAllClear = change.withoutAllClear
                 )
             }
         }
@@ -117,49 +132,148 @@ class MainViewModel(
         focusKryveOzero()
     }
 
-    fun toggleMonitored(regionId: String) {
-        repository.toggleRegionMonitored(regionId)
+    fun toggleMonitored(regionId: String): Boolean {
+        return repository.toggleRegionMonitored(regionId)
     }
 
-    fun setAlertLevel(regionId: String, level: AlertLevel, note: String = "") {
-        repository.setRegionAlertLevel(regionId, level, note)
+    fun setPinnedRegions(regionIds: Set<String>) {
+        repository.setPinnedRegions(regionIds)
     }
 
-    fun setRegionActiveAlerts(regionId: String, levels: Set<AlertLevel>, note: String = "") {
-        repository.setRegionActiveAlerts(regionId, levels, note)
+    fun dismissPinnedLimitMessage() {
+        repository.dismissPinnedLimitMessage()
     }
 
-    fun toggleAlertTypeForRegion(regionId: String, level: AlertLevel, note: String = "") {
-        repository.toggleAlertTypeForRegion(regionId, level, note)
+    fun setAlertLevel(
+        regionId: String,
+        level: AlertLevel,
+        note: String = "",
+        withoutAllClear: Boolean = false
+    ) {
+        repository.setRegionAlertLevel(regionId, level, note, withoutAllClear = withoutAllClear)
     }
 
-    fun setMultipleRegionsActiveAlerts(regionIds: List<String>, levels: Set<AlertLevel>, note: String = "") {
-        repository.setMultipleRegionsActiveAlerts(regionIds, levels, note)
+    fun clearRegionAlerts(regionId: String, withAllClearSound: Boolean) {
+        repository.clearRegionAlerts(regionId, withAllClearSound)
     }
 
-    fun triggerKryveOzeroAlert(level: AlertLevel, note: String = "") {
-        repository.triggerKryveOzeroAlert(level, note)
+    fun setRegionActiveAlerts(
+        regionId: String,
+        levels: Set<AlertLevel>,
+        note: String = "",
+        withoutAllClear: Boolean = false
+    ) {
+        repository.setRegionActiveAlerts(
+            regionId = regionId,
+            levels = levels,
+            threatNote = note,
+            withoutAllClear = withoutAllClear
+        )
+    }
+
+    fun toggleAlertTypeForRegion(
+        regionId: String,
+        level: AlertLevel,
+        note: String = "",
+        withoutAllClear: Boolean = false
+    ) {
+        repository.toggleAlertTypeForRegion(regionId, level, note, withoutAllClear = withoutAllClear)
+    }
+
+    fun setMultipleRegionsActiveAlerts(
+        regionIds: List<String>,
+        levels: Set<AlertLevel>,
+        note: String = "",
+        withoutAllClear: Boolean = false,
+        emitAudio: Boolean = true
+    ) {
+        repository.setMultipleRegionsActiveAlerts(
+            regionIds = regionIds,
+            levels = levels,
+            threatNote = note,
+            withoutAllClear = withoutAllClear,
+            emitAudio = emitAudio
+        )
+    }
+
+    fun triggerKryveOzeroAlert(
+        level: AlertLevel,
+        note: String = "",
+        withoutAllClear: Boolean = false
+    ) {
+        repository.triggerKryveOzeroAlert(level, note, withoutAllClear = withoutAllClear)
         focusKryveOzero()
     }
 
-    fun triggerKryveOzeroMultipleAlerts(levels: Set<AlertLevel>, note: String = "") {
-        repository.triggerKryveOzeroMultipleAlerts(levels, note)
+    fun triggerKryveOzeroMultipleAlerts(
+        levels: Set<AlertLevel>,
+        note: String = "",
+        withoutAllClear: Boolean = false
+    ) {
+        repository.triggerKryveOzeroMultipleAlerts(levels, note, withoutAllClear = withoutAllClear)
         focusKryveOzero()
     }
 
-    fun triggerAllClearKryveOzero() {
-        repository.triggerKryveOzeroAlert(AlertLevel.SAFE, "Відбій повітряної тривоги. Небезпека минула.")
+    fun triggerAllClearKryveOzero(withAllClearSound: Boolean = true) {
+        repository.clearRegionAlerts(AlertRepository.KRYVE_OZERO_ID, withAllClearSound = withAllClearSound)
         focusKryveOzero()
     }
 
-    fun triggerTotalAllClear() {
-        repository.triggerTotalAllClear()
+    fun triggerTotalAllClear(withoutAllClear: Boolean = false) {
+        repository.triggerTotalAllClear(withoutAllClear = withoutAllClear)
         focusKryveOzero()
     }
 
-    fun triggerStreetFightsAllClear(regionId: String = AlertRepository.KRYVE_OZERO_ID) {
-        repository.triggerStreetFightsAllClear(regionId)
+    fun triggerAllUkraineAlert(
+        level: AlertLevel = AlertLevel.RED,
+        levels: Set<AlertLevel> = setOf(level),
+        note: String = "",
+        withoutAllClear: Boolean = false
+    ) {
+        repository.triggerAllUkraineAlert(
+            level = level,
+            levels = levels,
+            threatNote = note,
+            withoutAllClear = withoutAllClear
+        )
+    }
+
+    fun triggerStreetFightsAllClear(
+        regionId: String = AlertRepository.KRYVE_OZERO_ID,
+        withoutAllClear: Boolean = false
+    ) {
+        repository.triggerStreetFightsAllClear(regionId, withoutAllClear = withoutAllClear)
         focusKryveOzero()
+    }
+
+    fun triggerSpecificAllClear(
+        regionId: String = AlertRepository.KRYVE_OZERO_ID,
+        targetLevel: AlertLevel,
+        withoutAllClear: Boolean = false
+    ) {
+        repository.triggerSpecificAllClear(
+            regionId = regionId,
+            targetLevel = targetLevel,
+            withoutAllClear = withoutAllClear
+        )
+    }
+
+    fun attachCustomAudioForLevel(level: AlertLevel, sourceUri: Uri): Boolean {
+        val path = soundPlayer.importCustomAudioFile(level, sourceUri) ?: return false
+        repository.setCustomAudioPath(level, path)
+        return true
+    }
+
+    fun clearCustomAudioForLevel(level: AlertLevel) {
+        repository.clearCustomAudioPath(level)
+    }
+
+    fun previewLevelSound(level: AlertLevel, title: String = level.title) {
+        soundPlayer.previewLevel(level, title, soundSettings.value)
+    }
+
+    fun previewSound(resId: Int, title: String) {
+        soundPlayer.previewResource(resId, title, soundSettings.value)
     }
 
     fun postComment(
@@ -192,10 +306,6 @@ class MainViewModel(
 
     fun stopAudio() {
         soundPlayer.stopAll()
-    }
-
-    fun previewSound(resId: Int, title: String) {
-        soundPlayer.previewResource(resId, title, soundSettings.value)
     }
 
     fun updateSoundSettings(newSettings: SoundSettings) {

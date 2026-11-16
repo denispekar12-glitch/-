@@ -35,6 +35,8 @@ data class FirestoreAlertRegion(
     val updatedByUid: String = "",
     @get:PropertyName("isPublic") @set:PropertyName("isPublic")
     var isPublic: Boolean = true,
+    @get:PropertyName("withoutAllClear") @set:PropertyName("withoutAllClear")
+    var withoutAllClear: Boolean = false,
     val alertStartTime: Long? = null,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
@@ -55,6 +57,8 @@ data class FirestoreAlertEvent(
     var isBroadcastBanner: Boolean = true,
     @get:PropertyName("isTotalAllClear") @set:PropertyName("isTotalAllClear")
     var isTotalAllClear: Boolean = false,
+    @get:PropertyName("withoutAllClear") @set:PropertyName("withoutAllClear")
+    var withoutAllClear: Boolean = false,
     @get:PropertyName("isPublic") @set:PropertyName("isPublic")
     var isPublic: Boolean = true,
     val clientTimestampMs: Long = 0L,

@@ -167,7 +167,8 @@ class FirestoreSyncRepository(
         activeLevels: List<String>,
         threatDetails: String,
         adminName: String,
-        alertStartTime: Long?
+        alertStartTime: Long?,
+        withoutAllClear: Boolean = false
     ): Result<Unit> {
         val uid = requireUserId()
         val safeId = regionId.replace(Regex("[^a-zA-Z0-9_\\-]"), "_").take(128)
@@ -178,10 +179,11 @@ class FirestoreSyncRepository(
                 val updateMap = mutableMapOf<String, Any>(
                     "regionName" to regionName.take(120),
                     "currentLevel" to currentLevel,
-                    "activeLevels" to activeLevels.take(5),
+                    "activeLevels" to activeLevels.take(10),
                     "threatDetails" to threatDetails.take(500),
                     "adminName" to adminName.ifBlank { AlertRepository.ADMIN_OWNER_NAME }.take(80),
                     "updatedByUid" to uid,
+                    "withoutAllClear" to withoutAllClear,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
                 if (alertStartTime != null && alertStartTime >= 0L) {
@@ -194,11 +196,12 @@ class FirestoreSyncRepository(
                 val createMap = mutableMapOf<String, Any>(
                     "regionName" to regionName.take(120),
                     "currentLevel" to currentLevel,
-                    "activeLevels" to activeLevels.take(5),
+                    "activeLevels" to activeLevels.take(10),
                     "threatDetails" to threatDetails.take(500),
                     "adminName" to adminName.ifBlank { AlertRepository.ADMIN_OWNER_NAME }.take(80),
                     "updatedByUid" to uid,
                     "isPublic" to true,
+                    "withoutAllClear" to withoutAllClear,
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
@@ -227,6 +230,7 @@ class FirestoreSyncRepository(
         adminName: String,
         isBroadcastBanner: Boolean,
         isTotalAllClear: Boolean,
+        withoutAllClear: Boolean = false,
         clientTimestampMs: Long = System.currentTimeMillis()
     ): Result<String> {
         val uid = requireUserId()
@@ -236,13 +240,14 @@ class FirestoreSyncRepository(
             "regionId" to regionId.take(64),
             "regionName" to regionName.take(120),
             "level" to level,
-            "activeLevels" to activeLevels.ifEmpty { listOf(level) }.take(5),
+            "activeLevels" to activeLevels.ifEmpty { listOf(level) }.take(10),
             "threatDetails" to threatDetails.take(500),
             "source" to source.ifBlank { "Адміністратор Денис" }.take(120),
             "adminName" to adminName.ifBlank { AlertRepository.ADMIN_OWNER_NAME }.take(80),
             "authorUid" to uid,
             "isBroadcastBanner" to isBroadcastBanner,
             "isTotalAllClear" to isTotalAllClear,
+            "withoutAllClear" to withoutAllClear,
             "isPublic" to true,
             "clientTimestampMs" to clientTimestampMs.coerceAtLeast(0L),
             "createdAt" to FieldValue.serverTimestamp()

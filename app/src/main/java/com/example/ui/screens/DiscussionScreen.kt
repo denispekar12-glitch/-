@@ -75,12 +75,21 @@ fun DiscussionScreen(
     savedAuthorName: String,
     onSaveAuthorName: (String) -> Unit,
     onPostComment: (String, String, String) -> Unit,
+    userEmail: String = "",
     modifier: Modifier = Modifier
 ) {
     var messageText by remember { mutableStateOf("") }
-    var authorNameInput by remember(userRole, savedAuthorName) {
+    var authorNameInput by remember(userRole, savedAuthorName, userEmail) {
         mutableStateOf(
-            if (userRole == UserRole.ADMIN) "Денис (Адміністратор)" else savedAuthorName
+            if (userRole == UserRole.ADMIN) {
+                if (userEmail.equals("semenenkom342@gmail.com", ignoreCase = true)) {
+                    "Адміністратор"
+                } else {
+                    "Денис (Адміністратор)"
+                }
+            } else {
+                savedAuthorName
+            }
         )
     }
     var selectedRegionTag by remember { mutableStateOf("Кривоозерська громада") }
@@ -157,7 +166,7 @@ fun DiscussionScreen(
                     }
                     Text(
                         text = if (userRole == UserRole.ADMIN) {
-                            "👑 Ви пишете як Денис (denispekar12@gmail.com) з офіційною позначкою"
+                            "👑 Ви пишете як адміністратор (${userEmail.ifBlank { "denispekar12@gmail.com" }}) з офіційною позначкою"
                         } else {
                             "Спільний чат Кривоозерської громади та оперативні повідомлення"
                         },

@@ -142,7 +142,11 @@ fun AdminPinDialog(
 
                 if (currentRole == UserRole.ADMIN) {
                     Text(
-                        text = "Ви авторизовані як Денис (головний адміністратор). Для показу іншим людям або передачі пристрою увімкніть режим звичайного користувача, щоб обмежити їм доступ.",
+                        text = if (userEmail.isNotBlank()) {
+                            "Ви авторизовані як адміністратор ($userEmail). Для показу іншим людям або передачі пристрою увімкніть режим звичайного користувача, щоб обмежити їм доступ."
+                        } else {
+                            "Ви авторизовані як адміністратор системи. Для показу іншим людям або передачі пристрою увімкніть режим звичайного користувача, щоб обмежити їм доступ."
+                        },
                         color = TextSecondary,
                         fontSize = 13.sp
                     )
@@ -189,7 +193,7 @@ fun AdminPinDialog(
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "Повне керування тривогами захищено правилами Firebase і доступне лише власнику системи Денису (denispekar12@gmail.com). Ви отримуєте всі тривоги, озвучення та чат у реальному часі.",
+                                text = "Повне керування тривогами захищено правилами Firebase і доступне лише адміністраторам (denispekar12@gmail.com, semenenkom342@gmail.com). Ви отримуєте всі тривоги, озвучення та чат у реальному часі.",
                                 color = TextSecondary,
                                 fontSize = 11.sp,
                                 lineHeight = 16.sp
@@ -204,7 +208,7 @@ fun AdminPinDialog(
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
                             Text(
-                                text = "👤 Власник системи: Денис",
+                                text = if (userEmail.isNotBlank()) "👤 Адміністратор: $userEmail" else "👤 Адміністратор системи",
                                 color = UkrYellow,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp

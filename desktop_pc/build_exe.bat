@@ -1,8 +1,8 @@
 @echo off
 chcp 65001 >nul
-title Збірка Омастротривога для Windows (.exe)
+title Збірка Омастротривога v2.0 для Windows (.exe)
 echo ========================================================
-echo   Збірка «Омастротривога» у standalone-файл .exe
+echo   Збірка «Омастротривога ПК v2.0» у standalone .exe
 echo ========================================================
 
 cd /d "%~dp0"
@@ -18,7 +18,15 @@ if errorlevel 1 (
     )
 )
 
-echo [1/3] Оновлення pip та встановлення PyInstaller...
+echo [1/4] Перевірка логіки та всіх 12 аудіофайлів...
+python -m unittest -v test_omastro_pc.py
+if errorlevel 1 (
+    echo [X] Помилка перевірки тестів!
+    pause
+    exit /b 1
+)
+
+echo [2/4] Оновлення pip та встановлення PyInstaller...
 python -m pip install --upgrade pip pyinstaller
 if errorlevel 1 (
     echo [X] Не вдалося встановити PyInstaller. Перевірте інтернет-з'єднання.
@@ -26,7 +34,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [2/3] Збірка OmastroTrivoga.exe з вбудованими голосовими сигналами...
+echo [3/4] Збірка OmastroTrivoga.exe з Google входом та вбудованими голосами...
 python -m PyInstaller --noconfirm --clean --onefile --windowed ^
     --name "OmastroTrivoga" ^
     --add-data "..\app\src\main\res\raw;assets\audio" ^
@@ -38,7 +46,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [3/3] Готово!
+echo [4/4] Готово!
 echo Ваш файл створено: %~dp0dist\OmastroTrivoga.exe
 start "" "%~dp0dist"
 pause

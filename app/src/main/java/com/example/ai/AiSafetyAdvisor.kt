@@ -24,9 +24,9 @@ class AiSafetyAdvisor {
             systemInstruction = content {
                 text(
                     """
-                    Ти — професійний український асистент із цивільного захисту та безпеки у додатку «Омастротривога» (фокус: Кривоозерська громада, Миколаївська область та вся Україна).
+                    Ти — професійний український асистент із цивільного захисту та безпеки у додатку «Омастротривога» (фокус: Кривоозерська громада, Первомайський та Миколаївський райони, усі райони України).
                     Відповідай завжди українською мовою, чітко, структуровано, спокійно та практично.
-                    Надавай конкретні кроки безпеки (укриття, правило двох стін, дії при повітряній тривозі, жовтому рівні, вуличних боях або сигналах цивільного захисту).
+                    Надавай конкретні кроки безпеки (укриття, правило двох стін, дії при повітряній тривозі, ракетній небезпеці, БПЛА, артобстрілах, хімічній чи радіаційній небезпеці, жовтому рівні, вуличних боях або сигналах цивільного захисту).
                     Не вигадуй поточних подій — спирайся лише на передані дані моніторингу та перевірені рекомендації ДСНС України.
                     Відповідь має бути лаконічною та зручною для швидкого читання на смартфоні.
                     """.trimIndent()
@@ -38,12 +38,12 @@ class AiSafetyAdvisor {
     fun streamSituationBrief(regions: List<RegionItem>): Flow<String> {
         val contextSummary = buildRegionsContextSummary(regions)
         val prompt = """
-            Ось актуальні дані моніторингу тривог у додатку «Омастротривога» прямо зараз:
+            Ось актуальні дані моніторингу тривог по районах у додатку «Омастротривога» прямо зараз:
             $contextSummary
 
             Дай коротке оперативне зведення (3–5 пунктів):
-            1. Поточний статус Кривоозерської громади та Миколаївської області.
-            2. Загальна ситуація по активних загрозах в Україні.
+            1. Поточний статус Кривоозерської громади, Первомайського та Миколаївського районів.
+            2. Загальна ситуація по активних загрозах у районах України.
             3. Чіткий алгоритм дій для мешканців просто зараз.
         """.trimIndent()
         return model.generateContentStream(prompt).mapNotNull { it.text }
@@ -52,7 +52,7 @@ class AiSafetyAdvisor {
     fun streamSafetyAnswer(question: String, regions: List<RegionItem>): Flow<String> {
         val contextSummary = buildRegionsContextSummary(regions)
         val prompt = """
-            Поточний контекст тривог у додатку:
+            Поточний контекст тривог по районах у додатку:
             $contextSummary
 
             Запитання користувача: $question
@@ -70,25 +70,27 @@ class AiSafetyAdvisor {
         val koDesc = if (kryveOzero != null) {
             val activeNames = kryveOzero.effectiveActiveAlerts.joinToString(", ") { it.title }
                 .ifBlank { kryveOzero.currentLevel.title }
-            "Кривоозерська громада (Криве Озеро): $activeNames. Деталі: ${kryveOzero.threatDetails}"
+            val noClearTag = if (kryveOzero.withoutAllClear) " [БЕЗ ВІДБОЮ]" else ""
+            "Кривоозерська громада (Криве Озеро): $activeNames$noClearTag. Деталі: ${kryveOzero.threatDetails}"
         } else {
             "Кривоозерська громада: дані відсутні"
         }
 
         val mkDesc = if (mykolaiv != null) {
-            "Миколаївська область: ${mykolaiv.currentLevel.title}"
+            "Миколаївський район: ${mykolaiv.currentLevel.title}"
         } else {
-            "Миколаївська область: немає даних"
+            "Миколаївський район: немає даних"
         }
 
         val othersDesc = if (activeDangers.isEmpty()) {
-            "Активних загроз по регіонах немає (усе спокійно)."
+            "Активних загроз по районах немає (усе спокійно)."
         } else {
-            "Регіони з активною загрозою (${activeDangers.size}): " +
-                activeDangers.take(10).joinToString("; ") { reg ->
+            "Райони з активною загрозою (${activeDangers.size}): " +
+                activeDangers.take(12).joinToString("; ") { reg ->
                     val alerts = reg.effectiveActiveAlerts.joinToString("+") { it.shortName }
                         .ifBlank { reg.currentLevel.shortName }
-                    "${reg.name} [$alerts]"
+                    val tag = if (reg.withoutAllClear) " (без відбою)" else ""
+                    "${reg.name} [$alerts]$tag"
                 }
         }
 

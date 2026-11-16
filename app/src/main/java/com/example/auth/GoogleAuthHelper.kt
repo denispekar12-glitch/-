@@ -39,10 +39,25 @@ internal fun FirebaseAuth.authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
     awaitClose { removeAuthStateListener(listener) }
 }
 
+fun resolvedUserEmail(user: FirebaseUser?): String {
+    if (user == null) return ""
+    val direct = user.email?.trim().orEmpty()
+    if (direct.isNotBlank()) return direct
+    return user.providerData
+        .firstOrNull { !it.email.isNullOrBlank() }
+        ?.email
+        ?.trim()
+        .orEmpty()
+}
+
 fun isVerifiedAdminUser(user: FirebaseUser?): Boolean {
     if (user == null) return false
-    return user.email.equals(AlertRepository.ADMIN_OWNER_EMAIL, ignoreCase = true) &&
-        user.isEmailVerified
+    val email = resolvedUserEmail(user)
+    if (!AlertRepository.isAdminEmail(email)) return false
+    val verifiedGoogleProvider = user.providerData.any {
+        it.providerId == GoogleAuthProvider.PROVIDER_ID && AlertRepository.isAdminEmail(it.email)
+    }
+    return user.isEmailVerified || verifiedGoogleProvider
 }
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {

@@ -58,8 +58,10 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.audio.AlertSoundPlayer
 import com.example.auth.authStateFlow
+import com.example.model.AlertLevel
 import com.example.auth.configureAppCheck
 import com.example.auth.isVerifiedAdminUser
+import com.example.auth.resolvedUserEmail
 import com.example.auth.signOutGoogle
 import com.example.data.AlertRepository
 import com.example.data.FirestoreSyncRepository
@@ -103,7 +105,7 @@ class MainActivity : ComponentActivity() {
                 } else {
                     key(currentUser.uid) {
                         val isVerifiedAdmin = isVerifiedAdminUser(currentUser)
-                        val userEmail = currentUser.email.orEmpty()
+                        val userEmail = resolvedUserEmail(currentUser)
                         val userDisplayName = currentUser.displayName.orEmpty()
                         val viewModel: MainViewModel = viewModel(
                             key = currentUser.uid,
@@ -159,6 +161,8 @@ fun MainAppContent(
     val comments by viewModel.comments.collectAsState()
     val userRole by viewModel.userRole.collectAsState()
     val soundSettings by viewModel.soundSettings.collectAsState()
+    val customAudioPaths by viewModel.customAudioPaths.collectAsState()
+    val pinnedLimitMessage by viewModel.pinnedLimitMessage.collectAsState()
     val isApiConnected by viewModel.isApiConnected.collectAsState()
     val isSyncing by viewModel.isSyncing.collectAsState()
     val onlineStatusMessage by viewModel.onlineStatusMessage.collectAsState()
@@ -336,26 +340,41 @@ fun MainAppContent(
                     events = events,
                     userRole = userRole,
                     latestAdminBroadcast = viewModel.latestAdminBroadcast.collectAsState().value,
+                    pinnedLimitMessage = pinnedLimitMessage,
+                    onDismissPinnedLimitMessage = { viewModel.dismissPinnedLimitMessage() },
                     onDismissBroadcast = { viewModel.dismissAdminBroadcast() },
-                    onAddKryveOzero = { viewModel.addOrPrioritizeKryveOzero() },
+                    onToggleMonitored = { id -> viewModel.toggleMonitored(id) },
                     onSelectRegion = { reg ->
                         viewModel.selectRegion(reg)
-                        viewModel.setTab(1) // Jump to map view of region
+                        viewModel.setTab(1)
                     },
-                    onTriggerKryveOzero = { level ->
-                        viewModel.triggerKryveOzeroAlert(level)
+                    onTriggerRegionAlert = { regionId, level, withoutAllClear ->
+                        viewModel.setAlertLevel(regionId, level, withoutAllClear = withoutAllClear)
                     },
-                    onTriggerKryveOzeroMultiple = { levels ->
-                        viewModel.triggerKryveOzeroMultipleAlerts(levels)
+                    onTriggerRegionMultiple = { regionId, levels, withoutAllClear ->
+                        viewModel.setRegionActiveAlerts(regionId, levels, withoutAllClear = withoutAllClear)
                     },
-                    onToggleKryveOzeroAlert = { level ->
-                        viewModel.toggleAlertTypeForRegion("kryve_ozero", level)
+                    onToggleRegionAlert = { regionId, level, withoutAllClear ->
+                        viewModel.toggleAlertTypeForRegion(regionId, level, withoutAllClear = withoutAllClear)
                     },
-                    onTriggerTotalAllClear = {
-                        viewModel.triggerTotalAllClear()
+                    onClearRegion = { regionId, withAllClearSound ->
+                        viewModel.clearRegionAlerts(regionId, withAllClearSound)
                     },
-                    onTriggerStreetFightsAllClear = {
-                        viewModel.triggerStreetFightsAllClear()
+                    onTriggerTotalAllClear = { withoutAllClear ->
+                        viewModel.triggerTotalAllClear(withoutAllClear)
+                    },
+                    onTriggerStreetFightsAllClear = { regionId, withoutAllClear ->
+                        viewModel.triggerStreetFightsAllClear(regionId, withoutAllClear)
+                    },
+                    onTriggerSpecificAllClear = { regionId, level, withoutAllClear ->
+                        viewModel.triggerSpecificAllClear(regionId, level, withoutAllClear)
+                    },
+                    onTriggerAllUkraineAlert = { level, levels, withoutAllClear ->
+                        viewModel.triggerAllUkraineAlert(
+                            level = level,
+                            levels = levels,
+                            withoutAllClear = withoutAllClear
+                        )
                     },
                     onOpenAudioSettings = { viewModel.setTab(3) },
                     onOpenMap = { viewModel.setTab(1) },
@@ -369,11 +388,16 @@ fun MainAppContent(
                     regions = regions,
                     selectedRegion = selectedRegion,
                     userRole = userRole,
+                    pinnedLimitMessage = pinnedLimitMessage,
+                    onDismissPinnedLimitMessage = { viewModel.dismissPinnedLimitMessage() },
                     onSelectRegion = { viewModel.selectRegion(it) },
                     onFocusKryveOzero = { viewModel.focusKryveOzero() },
                     onToggleMonitored = { viewModel.toggleMonitored(it) },
                     onSetAlertLevel = { id, level -> viewModel.setAlertLevel(id, level) },
-                    onToggleAlertType = { id, level -> viewModel.toggleAlertTypeForRegion(id, level) }
+                    onToggleAlertType = { id, level -> viewModel.toggleAlertTypeForRegion(id, level) },
+                    onClearRegion = { id, withAllClearSound -> viewModel.clearRegionAlerts(id, withAllClearSound) },
+                    onClearSpecificAlert = { id, level -> viewModel.triggerSpecificAllClear(id, level) },
+                    onTriggerAllUkraineAlert = { viewModel.triggerAllUkraineAlert(AlertLevel.RED) }
                 )
 
                 2 -> DiscussionScreen(
@@ -383,17 +407,22 @@ fun MainAppContent(
                     onSaveAuthorName = { viewModel.saveAuthorName(it) },
                     onPostComment = { text, name, tag ->
                         viewModel.postComment(text, name, tag)
-                    }
+                    },
+                    userEmail = userEmail
                 )
 
                 3 -> AudioSettingsScreen(
                     soundSettings = soundSettings,
+                    customAudioPaths = customAudioPaths,
                     isAudioPlaying = isAudioPlaying,
                     playingAudioTitle = playingAudioTitle,
                     userRole = userRole,
                     onUpdateSettings = { viewModel.updateSoundSettings(it) },
-                    onPreviewSound = { resId, title -> viewModel.previewSound(resId, title) },
+                    onPreviewLevelSound = { level, title -> viewModel.previewLevelSound(level, title) },
+                    onPreviewRawSound = { resId, title -> viewModel.previewSound(resId, title) },
                     onStopAudio = { viewModel.stopAudio() },
+                    onAttachCustomAudio = { level, uri -> viewModel.attachCustomAudioForLevel(level, uri) },
+                    onClearCustomAudio = { level -> viewModel.clearCustomAudioForLevel(level) },
                     onTestKryveOzeroAlert = { level -> viewModel.triggerKryveOzeroAlert(level) }
                 )
 
@@ -407,14 +436,31 @@ fun MainAppContent(
                     dsnsAutoSyncEnabled = dsnsAutoSyncEnabled,
                     onOpenPinDialog = { viewModel.openPinDialog() },
                     onLockToUserRole = { viewModel.lockToUserRole() },
-                    onSetAlertLevel = { id, level, note -> viewModel.setAlertLevel(id, level, note) },
-                    onSetRegionActiveAlerts = { id, levels, note -> viewModel.setRegionActiveAlerts(id, levels, note) },
-                    onToggleRegionAlertType = { id, level -> viewModel.toggleAlertTypeForRegion(id, level) },
-                    onSetMultipleRegionsActiveAlerts = { ids, levels, note ->
-                        viewModel.setMultipleRegionsActiveAlerts(ids, levels, note)
+                    onSetAlertLevel = { id, level, note, noClear ->
+                        viewModel.setAlertLevel(id, level, note, withoutAllClear = noClear)
                     },
-                    onTriggerTotalAllClear = { viewModel.triggerTotalAllClear() },
-                    onTriggerStreetFightsAllClear = { viewModel.triggerStreetFightsAllClear() },
+                    onSetRegionActiveAlerts = { id, levels, note, noClear ->
+                        viewModel.setRegionActiveAlerts(id, levels, note, withoutAllClear = noClear)
+                    },
+                    onToggleRegionAlertType = { id, level, noClear ->
+                        viewModel.toggleAlertTypeForRegion(id, level, withoutAllClear = noClear)
+                    },
+                    onSetMultipleRegionsActiveAlerts = { ids, levels, note, noClear ->
+                        viewModel.setMultipleRegionsActiveAlerts(ids, levels, note, withoutAllClear = noClear)
+                    },
+                    onClearRegion = { id, withAllClearSound ->
+                        viewModel.clearRegionAlerts(id, withAllClearSound)
+                    },
+                    onTriggerTotalAllClear = { noClear -> viewModel.triggerTotalAllClear(noClear) },
+                    onTriggerAllUkraineAlert = { level, levels, note, noClear ->
+                        viewModel.triggerAllUkraineAlert(level, levels, note, noClear)
+                    },
+                    onTriggerStreetFightsAllClear = { noClear ->
+                        viewModel.triggerStreetFightsAllClear(withoutAllClear = noClear)
+                    },
+                    onTriggerSpecificAllClear = { id, level, noClear ->
+                        viewModel.triggerSpecificAllClear(id, level, noClear)
+                    },
                     onSyncNow = { viewModel.syncNow() },
                     onUpdateOnlineChannel = { viewModel.updateOnlineChannelId(it) },
                     onToggleDsnsAutoSync = { viewModel.setDsnsAutoSyncEnabled(it) },

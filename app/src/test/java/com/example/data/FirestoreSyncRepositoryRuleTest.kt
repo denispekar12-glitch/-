@@ -189,8 +189,89 @@ class FirestoreSyncRepositoryRuleTest : FirestoreEmulatorTestBase() {
         assertTrue("Expected admin update to succeed, got ${updateRes.exceptionOrNull()}", updateRes.isSuccess)
     }
 
+    @Test
+    fun publishRegionAlertAndEvent_missileAndDroneWithoutAllClear_adminSucceeds() = runBlocking {
+        signInVerifiedTestUser(ADMIN_EMAIL)
+        val repo = FirestoreSyncRepository(firestore, auth)
+        val testRegionId = "pervomaisk_raion_${UUID.randomUUID().toString().replace("-", "_")}"
+        val eventId = "evt_${UUID.randomUUID().toString().replace("-", "_")}"
+
+        val regionRes = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.publishRegionAlert(
+                regionId = testRegionId,
+                regionName = "Первомайський район",
+                currentLevel = "RADIATION",
+                activeLevels = listOf("MISSILE", "DRONE", "CHEMICAL", "RADIATION"),
+                threatDetails = "Радіаційна та хімічна небезпека (Без відбою)",
+                adminName = "Денис",
+                alertStartTime = System.currentTimeMillis(),
+                withoutAllClear = true
+            )
+        }
+        assertTrue("Expected RADIATION+CHEMICAL region publish to succeed, got ${regionRes.exceptionOrNull()}", regionRes.isSuccess)
+
+        val eventRes = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.publishAlertEvent(
+                eventId = eventId,
+                regionId = testRegionId,
+                regionName = "Первомайський район",
+                level = "RADIATION",
+                activeLevels = listOf("MISSILE", "DRONE", "CHEMICAL", "RADIATION"),
+                threatDetails = "Радіаційна та хімічна небезпека",
+                source = "Адміністратор Денис",
+                adminName = "Денис",
+                isBroadcastBanner = true,
+                isTotalAllClear = false,
+                withoutAllClear = true
+            )
+        }
+        assertTrue("Expected RADIATION+CHEMICAL event publish to succeed, got ${eventRes.exceptionOrNull()}", eventRes.isSuccess)
+
+        val regions = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeAlertRegions().first { list -> list.any { it.id == testRegionId } }
+        }
+        val storedRegion = regions.first { it.id == testRegionId }
+        assertEquals("RADIATION", storedRegion.currentLevel)
+        assertEquals(listOf("MISSILE", "DRONE", "CHEMICAL", "RADIATION"), storedRegion.activeLevels)
+        assertEquals(true, storedRegion.withoutAllClear)
+    }
+
+    @Test
+    fun publishRegionAlert_secondVerifiedAdmin_createsAndUpdatesSuccessfully() = runBlocking {
+        signInVerifiedTestUser(ADMIN_SECOND_EMAIL)
+        val repo = FirestoreSyncRepository(firestore, auth)
+        val testRegionId = "second_admin_region_${UUID.randomUUID().toString().replace("-", "_")}"
+
+        val createRes = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.publishRegionAlert(
+                regionId = testRegionId,
+                regionName = "Первомайський район (Адмін #2)",
+                currentLevel = "DRONE",
+                activeLevels = listOf("DRONE"),
+                threatDetails = "Ударні БПЛА!",
+                adminName = "Адміністратор #2",
+                alertStartTime = System.currentTimeMillis()
+            )
+        }
+        assertTrue("Expected 2nd admin create to succeed, got ${createRes.exceptionOrNull()}", createRes.isSuccess)
+
+        val updateRes = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.publishRegionAlert(
+                regionId = testRegionId,
+                regionName = "Первомайський район (Адмін #2)",
+                currentLevel = "SAFE",
+                activeLevels = emptyList(),
+                threatDetails = "Відбій загрози!",
+                adminName = "Адміністратор #2",
+                alertStartTime = null
+            )
+        }
+        assertTrue("Expected 2nd admin update to succeed, got ${updateRes.exceptionOrNull()}", updateRes.isSuccess)
+    }
+
     private companion object {
         const val ADMIN_EMAIL = "denispekar12@gmail.com"
+        const val ADMIN_SECOND_EMAIL = "semenenkom342@gmail.com"
         const val ALICE_EMAIL = "alice@test.com"
         const val BOB_EMAIL = "bob@test.com"
         const val DEFAULT_TIMEOUT_MS = 5000L
