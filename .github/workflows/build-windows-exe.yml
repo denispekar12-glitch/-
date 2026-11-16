@@ -37,6 +37,48 @@ jobs:
       - name: Restore debug keystore (matches Google Sign-In SHA-1)
         run: tr -d '\r\n ' < debug.keystore.base64 | base64 -d > debug.keystore
 
+      - name: Ensure Firebase google-services.json for CI APK build
+        run: |
+          if [ ! -f app/google-services.json ]; then
+            python3 - <<'PY'
+          import json, pathlib, re
+          pc_src = pathlib.Path("desktop_pc/omastro_trivoga_pc.py").read_text(encoding="utf-8")
+          api_key = re.search(r'FIREBASE_API_KEY\s*=\s*"([^"]+)"', pc_src).group(1)
+          proj_id = re.search(r'FIREBASE_PROJECT_ID\s*=\s*"([^"]+)"', pc_src).group(1)
+          web_cid = re.search(r'DEFAULT_GOOGLE_CLIENT_ID\s*=\s*"([^"]+)"', pc_src).group(1)
+          proj_num = web_cid.split("-")[0]
+          gs = {
+              "project_info": {
+                  "project_number": proj_num,
+                  "project_id": proj_id,
+                  "storage_bucket": f"{proj_id}.firebasestorage.app",
+              },
+              "client": [{
+                  "client_info": {
+                      "mobilesdk_app_id": f"1:{proj_num}:android:e98bcee730a2bb2a24fdb5",
+                      "android_client_info": {"package_name": "com.aistudio.omastrotryvoga.krmpqa"},
+                  },
+                  "oauth_client": [
+                      {
+                          "client_id": f"{proj_num}-tc3pg9bamepknesrm661jm2ln1u679qf.apps.googleusercontent.com",
+                          "client_type": 1,
+                          "android_info": {
+                              "package_name": "com.aistudio.omastrotryvoga.krmpqa",
+                              "certificate_hash": "4b8a659177fc734de67dfcef5b35470b903343db",
+                          },
+                      },
+                      {"client_id": web_cid, "client_type": 3},
+                  ],
+                  "api_key": [{"current_key": api_key}],
+                  "services": {"appinvite_service": {"other_platform_oauth_client": [{"client_id": web_cid, "client_type": 3}]}},
+              }],
+              "configuration_version": "1",
+          }
+          pathlib.Path("app/google-services.json").write_text(json.dumps(gs, indent=2), encoding="utf-8")
+          print("Generated app/google-services.json for CI build.")
+          PY
+          fi
+
       - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
