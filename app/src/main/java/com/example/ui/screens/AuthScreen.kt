@@ -184,7 +184,7 @@ fun AuthScreen(
                 AuthFeatureRow(
                     icon = Icons.Default.Shield,
                     title = "Захист прав доступу",
-                    subtitle = "Повне керування лише у адміністратора Дениса; інші користувачі отримують сповіщення та чат"
+                    subtitle = "Повне керування лише в адміністраторів (denispekar12@gmail.com, semenenkom342@gmail.com); інші користувачі отримують сповіщення та чат"
                 )
                 Spacer(modifier = Modifier.height(10.dp))
                 AuthFeatureRow(
@@ -215,6 +215,7 @@ fun AuthScreen(
 
                 Button(
                     onClick = {
+                        isAttemptingSilent = false
                         errorMessage = null
                         isLoading = true
                         onGoogleSignInClicked(
@@ -234,7 +235,7 @@ fun AuthScreen(
                             }
                         )
                     },
-                    enabled = !isLoading && !isAttemptingSilent,
+                    enabled = !isLoading,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = PrimaryBlue,
                         contentColor = Color.White
@@ -245,7 +246,7 @@ fun AuthScreen(
                         .height(52.dp)
                         .testTag("google_sign_in_button")
                 ) {
-                    if (isLoading || isAttemptingSilent) {
+                    if (isLoading) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(22.dp),
                             color = Color.White,
@@ -253,7 +254,7 @@ fun AuthScreen(
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
-                            text = if (isAttemptingSilent) "Перевірка входу..." else "Авторизація...",
+                            text = "Авторизація...",
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp
                         )

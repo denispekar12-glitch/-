@@ -2716,7 +2716,14 @@ class OmastroTrivogaDesktopApp(_TkBase):
                     self.ui_queue.put(("auth_error", status_lbl, str(exc)))
 
             def _on_err(msg: str):
-                self.ui_queue.put(("auth_error", status_lbl, msg))
+                friendly = msg
+                if "redirect_uri_mismatch" in msg or "invalid_request" in msg:
+                    friendly = (
+                        f"Google відхилив локальний redirect ({msg}). "
+                        "Для швидкого входу на ПК скористайтеся блоком нижче «2. Вхід за Email та паролем (Firebase / Gmail)» "
+                        "або вставте Desktop OAuth Client ID."
+                    )
+                self.ui_queue.put(("auth_error", status_lbl, friendly))
 
             start_google_browser_oauth(chosen_cid, self.store.google_client_secret, _on_ok, _on_err)
 

@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build-android-apk:
-    name: Build Android APK (v2.0.1)
+    name: Build Android APK (v2.0.2)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -106,18 +106,18 @@ jobs:
       - name: Package APK with versioned filename
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/debug/app-debug.apk dist/OmastroTrivoga-v2.0.1.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/OmastroTrivoga-v2.0.2.apk
 
       - name: Upload Android APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: OmastroTrivoga-Android-APK
-          path: dist/OmastroTrivoga-v2.0.1.apk
+          path: dist/OmastroTrivoga-v2.0.2.apk
           if-no-files-found: error
           retention-days: 90
 
   build-exe:
-    name: Build Windows PC EXE (v2.0.1)
+    name: Build Windows PC EXE (v2.0.2)
     runs-on: windows-latest
     steps:
       - name: Checkout repository
@@ -135,7 +135,7 @@ jobs:
       - name: Install PyInstaller
         run: python -m pip install --upgrade pip pyinstaller
 
-      - name: Build OmastroTrivoga.exe (v2.0.1 with Google Login & 2 Admins)
+      - name: Build OmastroTrivoga.exe (v2.0.2 with Google Login & 2 Admins)
         working-directory: desktop_pc
         run: |
           python -m PyInstaller --noconfirm --clean --onefile --windowed `
@@ -165,9 +165,9 @@ jobs:
       - name: Publish GitHub Release (APK + Windows EXE)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0.1-build.${{ github.run_number }}
-          name: Омастротривога v2.0.1 (Android APK + Windows EXE)
+          tag_name: v2.0.2-build.${{ github.run_number }}
+          name: Омастротривога v2.0.2 (Android APK + Windows EXE)
           files: |
-            release-assets/OmastroTrivoga-Android-APK/OmastroTrivoga-v2.0.1.apk
+            release-assets/OmastroTrivoga-Android-APK/OmastroTrivoga-v2.0.2.apk
             release-assets/OmastroTrivoga-Windows-EXE/OmastroTrivoga.exe
           generate_release_notes: true
