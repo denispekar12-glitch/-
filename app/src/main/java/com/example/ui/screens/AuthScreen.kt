@@ -17,8 +17,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.NotificationsActive
@@ -113,8 +115,11 @@ fun AuthScreen(
                 .fillMaxWidth()
                 .widthIn(max = 480.dp)
         ) {
+            val scrollState = rememberScrollState()
             Column(
-                modifier = Modifier.padding(24.dp),
+                modifier = Modifier
+                    .verticalScroll(scrollState)
+                    .padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Box(
