@@ -78,7 +78,7 @@ private fun getApkSha1Fingerprint(context: Context): String? {
 private fun formatSigningDiagnostic(context: Context, fallbackMessage: String): String {
     val runtimeSha1 = getApkSha1Fingerprint(context)
     return if (runtimeSha1 != null && !runtimeSha1.equals(EXPECTED_DEBUG_SHA1, ignoreCase = true)) {
-        "$fallbackMessage\n\nСертифікат цього APK ($runtimeSha1) відрізняється від зареєстрованого Debug SHA-1 ($EXPECTED_DEBUG_SHA1). Встановіть APK (Debug) із GitHub Releases або додайте цей SHA-1 у Firebase Console."
+        "$fallbackMessage\n\nSHA-1 цього APK: $runtimeSha1\nДодайте цей SHA-1 у Firebase Console (проєкт gen-lang-client-0900673208 → Налаштування → Android-додаток) або додайте секрет DEBUG_KEYSTORE_BASE64 у GitHub Actions."
     } else {
         fallbackMessage
     }

@@ -48,6 +48,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -202,12 +203,14 @@ fun AuthScreen(
                             .fillMaxWidth()
                             .border(1.dp, AlertRed.copy(alpha = 0.6f), RoundedCornerShape(10.dp))
                     ) {
-                        Text(
-                            text = errorMessage ?: "",
-                            color = Color(0xFFFFB4AB),
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(10.dp)
-                        )
+                        SelectionContainer {
+                            Text(
+                                text = errorMessage ?: "",
+                                color = Color(0xFFFFB4AB),
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
                     }
                 }
 
